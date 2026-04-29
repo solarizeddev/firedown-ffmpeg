@@ -29,9 +29,26 @@ DEP_LD_FLAGS="-L${BUILD_DIR_EXTERNAL}/${ANDROID_ABI}/lib $FFMPEG_EXTRA_LD_FLAGS"
 # https://developer.android.com/guide/practices/page-sizes#compile-r27
 EXTRA_LDFLAGS="-Wl,-z,max-page-size=16384 $DEP_LD_FLAGS"
 
+# === Firedown configuration ===
+# - --enable-jni: required by replacement libavformat/http.c (OkHttp bridge)
+# - --disable-protocol=...: trim unused/unwanted network protocols
+# - --enable-protocol=http,https: only protocols we need (handled by OkHttp via JNI)
+# - --disable-muxer=hls,dash,hds: Firedown is a downloader, doesn't write streams
+# - --disable-encoders / --enable-encoder=aac: only AAC encoder for re-muxing
+# - --disable-outdevs / --disable-indevs: no input/output devices on Android
+# - --disable-ffprobe / --disable-ffmpeg / --disable-doc: skip CLI tools and docs
+
 ./configure \
   --prefix=${BUILD_DIR_FFMPEG}/${ANDROID_ABI} \
   --enable-cross-compile \
+  --enable-jni \
+  --disable-protocol=httpproxy,rtmp,rtmpe,rtmps,rtmpt,rtmpte,rtmpts,ffrtmp,ffrtmpcrypt,ffrtmphttp,rtsp,rtp,srtp,tls,ftp,ipns_gateway,gopher,ipfs_gateway,mmsh,mmst \
+  --enable-protocol=http,https \
+  --disable-muxer=hls,dash,hds \
+  --disable-encoders \
+  --enable-encoder=aac \
+  --disable-outdevs \
+  --disable-indevs \
   --target-os=android \
   --arch=${TARGET_TRIPLE_MACHINE_ARCH} \
   --sysroot=${SYSROOT_PATH} \
@@ -48,6 +65,9 @@ EXTRA_LDFLAGS="-Wl,-z,max-page-size=16384 $DEP_LD_FLAGS"
   --enable-shared \
   --disable-static \
   --disable-vulkan \
+  --disable-ffprobe \
+  --disable-ffmpeg \
+  --disable-doc \
   --pkg-config=${PKG_CONFIG_EXECUTABLE} \
   ${EXTRA_BUILD_CONFIGURATION_FLAGS} \
   $ADDITIONAL_COMPONENTS || exit 1

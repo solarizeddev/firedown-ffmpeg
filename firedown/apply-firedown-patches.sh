@@ -15,7 +15,7 @@ set -euo pipefail
 
 FFMPEG_DIR="${1:-}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-FIREDOWN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+FIREDOWN_DIR="$SCRIPT_DIR"
 
 if [[ -z "$FFMPEG_DIR" ]]; then
     echo "ERROR: missing FFmpeg source directory argument" >&2
@@ -48,44 +48,17 @@ if [[ -d "$REPLACEMENTS_DIR" ]]; then
 fi
 
 # ----------------------------------------------------------------------
-# Step 2: configure — make http/https protocols depend on jni
+# Step 2: hls.c — remove keepalive code paths
 # ----------------------------------------------------------------------
-
-CONFIGURE_FILE="$FFMPEG_DIR/configure"
-
-if grep -q '^http_protocol_deps="jni"' "$CONFIGURE_FILE"; then
-    echo "[firedown] configure already patched, skipping"
-else
-    echo "[firedown] Patching configure: jni dependency for http/https"
-
-    if ! grep -q '^ftp_protocol_deps=' "$CONFIGURE_FILE"; then
-        echo "ERROR: anchor 'ftp_protocol_deps=' not found in configure" >&2
-        echo "       Upstream FFmpeg may have changed; update this script." >&2
-        exit 2
-    fi
-
-    TMP="$(mktemp)"
-    awk '
-        /^ftp_protocol_deps=/ && !inserted {
-            print "http_protocol_deps=\"jni\""
-            print "https_protocol_deps=\"jni\""
-            inserted = 1
-        }
-        { print }
-    ' "$CONFIGURE_FILE" > "$TMP"
-
-    mv "$TMP" "$CONFIGURE_FILE"
-    chmod +x "$CONFIGURE_FILE"
-
-    if ! grep -q '^http_protocol_deps="jni"' "$CONFIGURE_FILE"; then
-        echo "ERROR: configure patch did not apply cleanly" >&2
-        exit 3
-    fi
-fi
-
-# ----------------------------------------------------------------------
-# Step 3: hls.c — remove keepalive code paths
-# ----------------------------------------------------------------------
+# Note: there was previously a step here that edited FFmpeg's configure
+# to add http_protocol_deps="jni" / https_protocol_deps="jni". That edit
+# was removed because:
+#   - scripts/ffmpeg/build.sh always passes --enable-jni, so JNI is
+#     available when http/https protocols are built.
+#   - If JNI is disabled, the replacement http.c fails at compile time
+#     with clear "ff_jni_* undeclared" errors — same outcome, simpler path.
+#   - configure is large and version-sensitive; anchor-based edits are
+#     fragile across FFmpeg versions.
 
 HLS_FILE="$FFMPEG_DIR/libavformat/hls.c"
 HLS_PATCH="$FIREDOWN_DIR/patches/0002-hls-c-remove-keepalive-branches.patch"

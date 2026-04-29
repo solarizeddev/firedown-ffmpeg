@@ -114,7 +114,7 @@ fi
 {
 cat <<'HEADER_EOF'
 From 0000000000000000000000000000000000000002 Mon Sep 17 00:00:00 2001
-From: solarizeddev <solarizeddev@solarized.dev>
+From: solarizeddev <info@solarized.dev>
 Date: Thu, 1 Jan 1970 00:00:00 +0000
 Subject: [PATCH 2/2] hls: remove open_url_keepalive code paths
 

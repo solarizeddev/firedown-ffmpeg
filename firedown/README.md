@@ -1,31 +1,33 @@
 # firedown/
 
-This directory contains everything Firedown adds on top of upstream `ffmpeg-android-maker`. Nothing in this directory exists in `Javernaut/ffmpeg-android-maker` — it's all Firedown-specific. Keeping it isolated here means upstream merges won't conflict with our changes.
+This directory contains everything Firedown adds on top of upstream `ffmpeg-android-maker`. Nothing here exists in `Javernaut/ffmpeg-android-maker` — keeping it isolated means upstream merges won't conflict with our changes.
 
 ## Contents
 
 ```
 firedown/
-├── apply-firedown-patches.sh    # Invoked by the patched ffmpeg-android-maker.sh
-│                                # during build. Applies replacements + patches
-│                                # to the FFmpeg source tree.
+├── apply-firedown-patches.sh    # Invoked by ffmpeg-android-maker.sh during build.
+│                                # Applies replacements + patches to the FFmpeg
+│                                # source tree before configure runs.
 │
 ├── replacements/                # Files that replace vanilla FFmpeg sources
 │   └── libavformat/
 │       └── http.c               # OkHttp JNI backend (replaces FFmpeg's HTTP)
 │
-├── patches/                     # In-place patches to vanilla FFmpeg sources
-│   ├── 0001-ffmpeg-android-maker-add-firedown-hook.patch
-│   │                            # The diff documenting how the main
-│   │                            # ffmpeg-android-maker.sh is modified. This
-│   │                            # patch is already applied in this fork — it
-│   │                            # exists for reference and re-application
-│   │                            # against future upstream versions.
+├── patches/                     # Documentation patches — already applied in this fork.
+│   │                            # Kept for reference and re-application against
+│   │                            # future upstream merges.
 │   │
-│   └── 0002-hls-c-remove-keepalive-branches.patch
-│                                # Removes open_url_keepalive code paths in
-│                                # libavformat/hls.c. Generated against your
-│                                # specific FFmpeg version (see below).
+│   ├── 0001-ffmpeg-android-maker-add-firedown-hook.patch
+│   │                            # The 9-line hook added to ffmpeg-android-maker.sh
+│   │
+│   ├── 0002-hls-c-remove-keepalive-branches.patch
+│   │                            # libavformat/hls.c — generated against your
+│   │                            # specific FFmpeg version, NOT applied in this
+│   │                            # repo (applied at build time by apply-firedown-patches.sh)
+│   │
+│   └── 0003-build-sh-firedown-configure-flags.patch
+│                                # Firedown's configure flags added to scripts/ffmpeg/build.sh
 │
 └── scripts/
     ├── install-firedown-hook.sh # One-time: re-applies the modification to
@@ -37,31 +39,49 @@ firedown/
                                  # FFmpeg version.
 ```
 
-## How it fits together
+## Two kinds of changes
 
-The patched `ffmpeg-android-maker.sh` at the repo root (modified by `0001`) calls `firedown/apply-firedown-patches.sh` after FFmpeg source is downloaded but before any build runs. That script:
+This fork has **two categories** of modifications, handled differently:
 
-1. Copies `firedown/replacements/libavformat/http.c` over the upstream `http.c`
-2. Edits `configure` via `awk` to add `http_protocol_deps="jni"` and `https_protocol_deps="jni"`
-3. Applies `firedown/patches/0002-hls-c-remove-keepalive-branches.patch` via `patch -p1`
+### Category A: Changes to the `ffmpeg-android-maker` repo itself (committed in this fork's tree)
 
-All three operations are idempotent — running twice on the same source tree is safe.
+These are modifications to files that live in this repo's source — not in FFmpeg's source. Committed directly in their modified form:
+
+| File | What changed | Documented at |
+|---|---|---|
+| `ffmpeg-android-maker.sh` | Hook to invoke `apply-firedown-patches.sh` | `firedown/patches/0001-...patch` |
+| `scripts/ffmpeg/build.sh` | Firedown configure flags (`--enable-jni`, protocol/muxer trim, etc.) | `firedown/patches/0003-...patch` |
+
+The patches in `firedown/patches/` for these are documentation only — they're already applied in this fork. They exist so:
+- A reader can see at a glance what was changed and why
+- If upstream rewrites these files in a future merge, the patches can be re-applied (or `install-firedown-hook.sh` can do it for `ffmpeg-android-maker.sh`)
+
+### Category B: Changes to FFmpeg source (applied at build time)
+
+These modify files inside the FFmpeg source tree, which is downloaded fresh each build. They cannot be pre-committed because the FFmpeg source isn't part of this repo:
+
+| FFmpeg file | What changes | Mechanism |
+|---|---|---|
+| `libavformat/http.c` | Full replacement with OkHttp JNI backend | `firedown/replacements/libavformat/http.c` is copied over at build time |
+| `libavformat/hls.c` | Remove `open_url_keepalive` code paths | `firedown/patches/0002-...patch` is applied at build time |
+| `configure` | Add `http_protocol_deps="jni"` and `https_protocol_deps="jni"` | `apply-firedown-patches.sh` uses `awk` to insert the declarations |
+
+`apply-firedown-patches.sh` is invoked by the modified `ffmpeg-android-maker.sh` after FFmpeg source is downloaded but before any per-ABI build runs. It performs all three operations idempotently.
 
 ## Initial setup
 
-If you've just forked this repo or pulled fresh from upstream, you may need to:
+If you've just forked this repo, the only thing you need to do before the first build is **generate the real hls.c patch** against your target FFmpeg version:
 
-1. **Re-apply the main script hook** (if upstream's `ffmpeg-android-maker.sh` was overwritten by a merge):
-   ```bash
-   ./firedown/scripts/install-firedown-hook.sh
-   ```
+```bash
+# Outside the repo
+wget https://ffmpeg.org/releases/ffmpeg-8.1.tar.xz
+tar -xf ffmpeg-8.1.tar.xz
 
-2. **Generate the hls.c patch** against your target FFmpeg version:
-   ```bash
-   wget https://ffmpeg.org/releases/ffmpeg-8.1.tar.xz
-   tar -xf ffmpeg-8.1.tar.xz
-   ./firedown/scripts/generate-hls-patch.sh ./ffmpeg-8.1
-   ```
+# Inside the repo
+./firedown/scripts/generate-hls-patch.sh /path/to/ffmpeg-8.1
+```
+
+The placeholder file at `firedown/patches/0002-hls-c-remove-keepalive-branches.patch` will be overwritten with a real, applying patch. Commit it.
 
 After that, normal builds via `./ffmpeg-android-maker.sh` will pick up Firedown's modifications automatically.
 
@@ -69,11 +89,13 @@ After that, normal builds via `./ffmpeg-android-maker.sh` will pick up Firedown'
 
 If `Javernaut/ffmpeg-android-maker` releases a new version and you want to merge:
 
-1. Pull upstream into your fork
-2. If `ffmpeg-android-maker.sh` was modified upstream, re-run `install-firedown-hook.sh` to put the hook back
-3. If FFmpeg version was bumped, regenerate the hls.c patch with `generate-hls-patch.sh`
-4. Test build end-to-end before tagging a new release
+1. Pull upstream into your fork (`git pull upstream master` after adding the upstream remote)
+2. Resolve any conflicts in `ffmpeg-android-maker.sh` and `scripts/ffmpeg/build.sh`. If overwriting them is easier:
+   - Re-run `./firedown/scripts/install-firedown-hook.sh` to put the main script hook back
+   - Manually re-apply `0003-build-sh-firedown-configure-flags.patch` to `scripts/ffmpeg/build.sh`
+3. If FFmpeg version was bumped, regenerate the hls.c patch via `generate-hls-patch.sh`
+4. Test build end-to-end before tagging a release
 
 ## When the hls.c regex stops matching
 
-If `generate-hls-patch.sh` warns "block not found", upstream FFmpeg has rewritten the affected regions of `libavformat/hls.c`. Open the script and update the regex patterns to match the new code. The patterns are documented inline.
+If `generate-hls-patch.sh` warns "block not found", upstream FFmpeg has rewritten the affected regions of `libavformat/hls.c`. Open the script, locate the regex patterns (clearly commented), and update them to match the new code. The patch generator is forgiving of context drift — it does the work of producing a real diff once it can find the blocks.

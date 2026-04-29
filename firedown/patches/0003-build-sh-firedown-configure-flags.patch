@@ -1,0 +1,69 @@
+From 0000000000000000000000000000000000000003 Mon Sep 17 00:00:00 2001
+From: solarizeddev <solarizeddev@solarized.dev>
+Date: Thu, 1 Jan 1970 00:00:00 +0000
+Subject: [PATCH 3/3] scripts/ffmpeg/build.sh: Firedown configure flags
+
+Adds Firedown-specific configure flags to the FFmpeg build:
+
+  - --enable-jni: required by replacement libavformat/http.c (OkHttp bridge)
+  - --disable-protocol=...: trim unused/unwanted network protocols
+    (httpproxy, rtmp variants, rtsp, rtp, srtp, tls, ftp, gopher, ipfs/ipns
+    gateways, mmsh, mmst). Firedown's HTTP backend handles TLS via OkHttp.
+  - --enable-protocol=http,https: only protocols we keep
+  - --disable-muxer=hls,dash,hds: Firedown is a downloader, not a streamer
+  - --disable-encoders --enable-encoder=aac: only AAC encoder for audio
+    re-muxing
+  - --disable-outdevs --disable-indevs: no input/output devices on Android
+  - --disable-ffprobe --disable-ffmpeg --disable-doc: skip CLI tools and
+    documentation; Firedown only consumes the libraries
+
+Preserves upstream's 16 KB page size flag for Android 15 compatibility.
+
+This patch is already applied in this fork — kept here for documentation
+and re-application against future upstream merges.
+
+---
+ scripts/ffmpeg/build.sh | 20 ++++++++++++++++++++
+ 1 file changed, 20 insertions(+)
+
+--- a/scripts/ffmpeg/build.sh
++++ b/scripts/ffmpeg/build.sh
+@@ -29,9 +29,26 @@
+ # https://developer.android.com/guide/practices/page-sizes#compile-r27
+ EXTRA_LDFLAGS="-Wl,-z,max-page-size=16384 $DEP_LD_FLAGS"
+ 
++# === Firedown configuration ===
++# - --enable-jni: required by replacement libavformat/http.c (OkHttp bridge)
++# - --disable-protocol=...: trim unused/unwanted network protocols
++# - --enable-protocol=http,https: only protocols we need (handled by OkHttp via JNI)
++# - --disable-muxer=hls,dash,hds: Firedown is a downloader, doesn't write streams
++# - --disable-encoders / --enable-encoder=aac: only AAC encoder for re-muxing
++# - --disable-outdevs / --disable-indevs: no input/output devices on Android
++# - --disable-ffprobe / --disable-ffmpeg / --disable-doc: skip CLI tools and docs
++
+ ./configure \
+   --prefix=${BUILD_DIR_FFMPEG}/${ANDROID_ABI} \
+   --enable-cross-compile \
++  --enable-jni \
++  --disable-protocol=httpproxy,rtmp,rtmpe,rtmps,rtmpt,rtmpte,rtmpts,ffrtmp,ffrtmpcrypt,ffrtmphttp,rtsp,rtp,srtp,tls,ftp,ipns_gateway,gopher,ipfs_gateway,mmsh,mmst \
++  --enable-protocol=http,https \
++  --disable-muxer=hls,dash,hds \
++  --disable-encoders \
++  --enable-encoder=aac \
++  --disable-outdevs \
++  --disable-indevs \
+   --target-os=android \
+   --arch=${TARGET_TRIPLE_MACHINE_ARCH} \
+   --sysroot=${SYSROOT_PATH} \
+@@ -48,6 +65,9 @@
+   --enable-shared \
+   --disable-static \
+   --disable-vulkan \
++  --disable-ffprobe \
++  --disable-ffmpeg \
++  --disable-doc \
+   --pkg-config=${PKG_CONFIG_EXECUTABLE} \
+   ${EXTRA_BUILD_CONFIGURATION_FLAGS} \
+   $ADDITIONAL_COMPONENTS || exit 1
+-- 
+2.40.0
