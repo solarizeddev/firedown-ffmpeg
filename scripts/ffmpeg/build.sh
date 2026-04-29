@@ -41,8 +41,11 @@ EXTRA_LDFLAGS="-Wl,-z,max-page-size=16384 $DEP_LD_FLAGS"
 ./configure \
   --prefix=${BUILD_DIR_FFMPEG}/${ANDROID_ABI} \
   --enable-cross-compile \
+  --disable-openssl \
+  --disable-gnutls \
+  --disable-mbedtls \
   --enable-jni \
-  --disable-protocol=httpproxy,rtmp,rtmpe,rtmps,rtmpt,rtmpte,rtmpts,ffrtmp,ffrtmpcrypt,ffrtmphttp,rtsp,rtp,srtp,tls,ftp,ipns_gateway,gopher,ipfs_gateway,mmsh,mmst \
+  --disable-protocol=httpproxy,rtmp,rtmpe,rtmps,rtmpt,rtmpte,rtmpts,tls,ffrtmp,ffrtmpcrypt,ffrtmphttp,rtsp,rtp,srtp,ftp,ipns_gateway,gopher,ipfs_gateway,mmsh,mmst \
   --enable-protocol=http,https \
   --disable-muxer=hls,dash,hds \
   --disable-encoders \

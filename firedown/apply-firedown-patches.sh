@@ -9,7 +9,8 @@
 # Usage:
 #   ./apply-firedown-patches.sh <path-to-ffmpeg-source-dir>
 #
-# Idempotent — running twice on the same tree is safe.
+# Idempotent — running twice on the same tree is safe. Each edit is checked
+# independently so partial states from prior failed runs are recoverable.
 
 set -euo pipefail
 
@@ -31,10 +32,8 @@ fi
 echo "[firedown] Applying patches to: $FFMPEG_DIR"
 
 # ----------------------------------------------------------------------
-# Step 1: File replacements
+# Step 1: File replacements (http.c → OkHttp JNI backend)
 # ----------------------------------------------------------------------
-# Full-file replacements live in firedown/replacements/. Each file is
-# copied verbatim over the upstream version.
 
 REPLACEMENTS_DIR="$FIREDOWN_DIR/replacements"
 
@@ -48,17 +47,84 @@ if [[ -d "$REPLACEMENTS_DIR" ]]; then
 fi
 
 # ----------------------------------------------------------------------
-# Step 2: hls.c — remove keepalive code paths
+# Step 2: configure — patch protocol declarations
 # ----------------------------------------------------------------------
-# Note: there was previously a step here that edited FFmpeg's configure
-# to add http_protocol_deps="jni" / https_protocol_deps="jni". That edit
-# was removed because:
-#   - scripts/ffmpeg/build.sh always passes --enable-jni, so JNI is
-#     available when http/https protocols are built.
-#   - If JNI is disabled, the replacement http.c fails at compile time
-#     with clear "ff_jni_* undeclared" errors — same outcome, simpler path.
-#   - configure is large and version-sensitive; anchor-based edits are
-#     fragile across FFmpeg versions.
+# Two independent edits, matching the working Firedown build:
+#
+#  (a) DELETE the line  https_protocol_select="tls_protocol"
+#      Decouples https_protocol from tls_protocol so https builds without
+#      a TLS backend. Our replacement http.c handles HTTPS at the OkHttp
+#      layer in Java.
+#
+#  (b) ADD the line  http_protocol_deps="jni"
+#      Marks http_protocol as JNI-dependent (matches what the replacement
+#      http.c actually uses). Inserted just before the
+#      "# external library protocols" comment.
+#
+# Each edit is checked independently — if a prior run did (a) but failed
+# before (b), re-running this script will complete (b).
+
+echo "[firedown] Patching configure..."
+
+python3 - "$FFMPEG_DIR/configure" <<'PYEOF'
+import sys
+
+path = sys.argv[1]
+with open(path) as f:
+    text = f.read()
+
+orig = text
+changes = []
+
+# (a) Delete https_protocol_select="tls_protocol", replace with marker.
+old_a = 'https_protocol_select="tls_protocol"'
+marker_a = '# FIREDOWN-PATCH-A: https_protocol_select removed (was tls_protocol)'
+if marker_a in text:
+    pass  # already done
+elif old_a in text:
+    text = text.replace(old_a, marker_a, 1)
+    changes.append('(a) deleted https_protocol_select line')
+else:
+    print('ERROR: anchor for edit (a) not found: ' + old_a, file=sys.stderr)
+    print('       Upstream FFmpeg may have changed; update this script.', file=sys.stderr)
+    sys.exit(2)
+
+# (b) Inject http_protocol_deps="jni" before "# external library protocols".
+inject_b = 'http_protocol_deps="jni"'
+anchor_b = '# external library protocols'
+if inject_b in text:
+    pass  # already done
+elif anchor_b in text:
+    text = text.replace(anchor_b, inject_b + '\n\n' + anchor_b, 1)
+    changes.append('(b) inserted http_protocol_deps="jni"')
+else:
+    print('ERROR: anchor for edit (b) not found: ' + anchor_b, file=sys.stderr)
+    sys.exit(2)
+
+if text != orig:
+    with open(path, 'w') as f:
+        f.write(text)
+    for c in changes:
+        print('[firedown] ' + c)
+else:
+    print('[firedown] configure already fully patched')
+PYEOF
+
+# Independent post-patch verification
+if ! grep -q '# FIREDOWN-PATCH-A' "$FFMPEG_DIR/configure"; then
+    echo "ERROR: edit (a) verification failed (https_protocol_select not removed)" >&2
+    exit 3
+fi
+if ! grep -q '^http_protocol_deps="jni"$' "$FFMPEG_DIR/configure"; then
+    echo "ERROR: edit (b) verification failed (http_protocol_deps=jni not present)" >&2
+    exit 3
+fi
+
+chmod +x "$FFMPEG_DIR/configure"
+
+# ----------------------------------------------------------------------
+# Step 3: hls.c — remove keepalive code paths
+# ----------------------------------------------------------------------
 
 HLS_FILE="$FFMPEG_DIR/libavformat/hls.c"
 HLS_PATCH="$FIREDOWN_DIR/patches/0002-hls-c-remove-keepalive-branches.patch"
@@ -68,11 +134,9 @@ if [[ ! -f "$HLS_FILE" ]]; then
     exit 4
 fi
 
-# Idempotency: the patch adds a marker comment we can grep for
 if grep -q "FIREDOWN-HLS-PATCHED" "$HLS_FILE"; then
     echo "[firedown] hls.c already patched, skipping"
 elif [[ -f "$HLS_PATCH" ]] && head -1 "$HLS_PATCH" | grep -q '^From '; then
-    # Real generated patch (starts with "From <hash>")
     echo "[firedown] Applying hls.c patch..."
     if ! patch -p1 --forward --reject-file=- -d "$FFMPEG_DIR" < "$HLS_PATCH"; then
         echo "ERROR: hls.c patch failed to apply" >&2
