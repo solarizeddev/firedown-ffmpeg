@@ -1,27 +1,69 @@
-# PLACEHOLDER — generate this against your target FFmpeg version
-#
-# This file is not a real patch yet. To produce one that applies cleanly:
-#
-#   1. Download FFmpeg source for your target version, e.g.:
-#        wget https://ffmpeg.org/releases/ffmpeg-8.1.tar.xz
-#        tar -xf ffmpeg-8.1.tar.xz
-#
-#   2. Run the generator from this repo's root:
-#        ./firedown/scripts/generate-hls-patch.sh /path/to/ffmpeg-8.1
-#
-#   3. The script overwrites this file with a real unified diff.
-#
-# What the patch does (when generated):
-#
-#   - In open_url(), removes the `if (is_http && c->http_persistent && *pb)`
-#     branch that calls open_url_keepalive, replacing it with a direct
-#     s->io_open call.
-#
-#   - Removes the playlist parsing keepalive branch that reuses
-#     c->playlist_pb via open_url_keepalive.
-#
-# Both changes are safe because Firedown never sets http_persistent.
-# OkHttp on the Java side handles connection pooling at the transport layer.
-#
-# The generated patch adds a FIREDOWN-HLS-PATCHED marker comment so
-# apply-firedown-patches.sh can detect when it's already been applied.
+From 0000000000000000000000000000000000000002 Mon Sep 17 00:00:00 2001
+From: solarizeddev <info@solarized.dev>
+Date: Thu, 1 Jan 1970 00:00:00 +0000
+Subject: [PATCH 2/2] hls: remove open_url_keepalive code paths
+
+Firedown's HTTP backend is provided via JNI (OkHttp on the Java side).
+OkHttp manages connection pooling and keepalive at the transport layer,
+so FFmpeg's hls demuxer does not need its own keepalive fast-path.
+
+This patch:
+  - removes the open_url_keepalive call in open_url() and falls through
+    directly to s->io_open
+  - removes the playlist_pb keepalive reuse in the playlist parsing path
+
+Adds a FIREDOWN-HLS-PATCHED marker comment so apply-firedown-patches.sh
+can detect when the patch is already applied.
+---
+ libavformat/hls.c | varies
+
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -699,23 +699,8 @@
+     av_dict_copy(&tmp, *opts, 0);
+     av_dict_copy(&tmp, opts2, 0);
+ 
+-    if (is_http && c->http_persistent && *pb) {
+-        ret = open_url_keepalive(c->ctx, pb, url, &tmp);
+-        if (ret == AVERROR_EXIT) {
+-            av_dict_free(&tmp);
+-            return ret;
+-        } else if (ret < 0) {
+-            if (ret != AVERROR_EOF)
+-                av_log(s, AV_LOG_WARNING,
+-                    "keepalive request failed for '%s' with error: '%s' when opening url, retrying with new connection\n",
+-                    url, av_err2str(ret));
+-            av_dict_copy(&tmp, *opts, 0);
+-            av_dict_copy(&tmp, opts2, 0);
+-            ret = s->io_open(s, pb, url, AVIO_FLAG_READ, &tmp);
+-        }
+-    } else {
+-        ret = s->io_open(s, pb, url, AVIO_FLAG_READ, &tmp);
+-    }
++    /* FIREDOWN-HLS-PATCHED: keepalive removed, all I/O via io_open */
++    ret = s->io_open(s, pb, url, AVIO_FLAG_READ, &tmp);
+     if (ret >= 0) {
+         // update cookies on http response with setcookies.
+         char *new_cookies = NULL;
+@@ -805,19 +790,6 @@
+     int prev_n_segments = 0;
+     int64_t prev_start_seq_no = -1;
+ 
+-    if (is_http && !in && c->http_persistent && c->playlist_pb) {
+-        in = c->playlist_pb;
+-        ret = open_url_keepalive(c->ctx, &c->playlist_pb, url, NULL);
+-        if (ret == AVERROR_EXIT) {
+-            return ret;
+-        } else if (ret < 0) {
+-            if (ret != AVERROR_EOF)
+-                av_log(c->ctx, AV_LOG_WARNING,
+-                    "keepalive request failed for '%s' with error: '%s' when parsing playlist\n",
+-                    url, av_err2str(ret));
+-            in = NULL;
+-        }
+-    }
+ 
+     if (!in) {
+         AVDictionary *opts = NULL;
+-- 
+2.40.0
