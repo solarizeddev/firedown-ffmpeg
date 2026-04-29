@@ -1,0 +1,41 @@
+From 0000000000000000000000000000000000000001 Mon Sep 17 00:00:00 2001
+From: solarizeddev <solarizeddev@solarized.dev>
+Date: Thu, 1 Jan 1970 00:00:00 +0000
+Subject: [PATCH 1/2] ffmpeg-android-maker: hook Firedown patch application
+
+After all components have been downloaded but before any per-ABI build
+loops start, invoke firedown/apply-firedown-patches.sh to apply
+Firedown's modifications (replacement http.c, hls.c patch, and configure
+edits) to the freshly-extracted FFmpeg source tree.
+
+Running once before the build loop means the patches are applied a
+single time and benefit every ABI build that follows.
+
+The hook is conditional on the apply script being executable and present,
+so this modification is a no-op for upstream/non-Firedown builds.
+
+---
+ ffmpeg-android-maker.sh | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+--- a/ffmpeg-android-maker.sh
++++ b/ffmpeg-android-maker.sh
+@@ -94,6 +94,16 @@
+   cd ${BASE_DIR}
+ done
+ 
++# === Firedown: apply project-specific patches to FFmpeg source ===
++# After all components have been downloaded but before any builds start,
++# apply Firedown's modifications to the FFmpeg source tree. This runs once
++# and benefits all subsequent per-ABI builds.
++if [[ -x "${BASE_DIR}/firedown/apply-firedown-patches.sh" ]]; then
++  echo "Applying Firedown patches to FFmpeg source..."
++  "${BASE_DIR}/firedown/apply-firedown-patches.sh" "${SOURCES_DIR_ffmpeg}" || exit 1
++fi
++# === End Firedown patches ===
++
+ # Main build loop
+ for ABI in ${FFMPEG_ABIS_TO_BUILD[@]}
+ do
+-- 
+2.40.0

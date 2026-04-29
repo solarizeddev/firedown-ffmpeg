@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 
 # Defining essential directories
-
 # The root of the project
 export BASE_DIR="$( cd "$( dirname "$0" )" && pwd )"
 # Directory that contains source code for FFmpeg and its dependencies
@@ -47,7 +46,6 @@ function prepareOutput() {
 function checkTextRelocations() {
   TEXT_REL_STATS_FILE=${STATS_DIR}/text-relocations.txt
   ${FAM_READELF} --dynamic ${BUILD_DIR_FFMPEG}/${ANDROID_ABI}/lib/*.so | grep 'TEXTREL\|File' >> ${TEXT_REL_STATS_FILE}
-
   if grep -q TEXTREL ${TEXT_REL_STATS_FILE}; then
     echo "There are text relocations in output files:"
     cat ${TEXT_REL_STATS_FILE}
@@ -61,6 +59,7 @@ function checkTextRelocations() {
 rm -rf ${BUILD_DIR}
 rm -rf ${STATS_DIR}
 rm -rf ${OUTPUT_DIR}
+
 mkdir -p ${STATS_DIR}
 mkdir -p ${OUTPUT_DIR}
 
@@ -77,10 +76,8 @@ for COMPONENT in ${COMPONENTS_TO_BUILD[@]}
 do
   echo "Getting source code of the component: ${COMPONENT}"
   SOURCE_DIR_FOR_COMPONENT=${SOURCES_DIR}/${COMPONENT}
-
   mkdir -p ${SOURCE_DIR_FOR_COMPONENT}
   cd ${SOURCE_DIR_FOR_COMPONENT}
-
   # Executing the component-specific script for downloading the source code
   source ${SCRIPTS_DIR}/${COMPONENT}/download.sh
 
@@ -90,12 +87,22 @@ do
   # If it isn't set, consider SOURCE_DIR_FOR_COMPONENT as the proper value
   COMPONENT_SOURCES_DIR_VARIABLE=SOURCES_DIR_${COMPONENT}
   if [[ -z "${!COMPONENT_SOURCES_DIR_VARIABLE}" ]]; then
-     export SOURCES_DIR_${COMPONENT}=${SOURCE_DIR_FOR_COMPONENT}
+    export SOURCES_DIR_${COMPONENT}=${SOURCE_DIR_FOR_COMPONENT}
   fi
 
   # Returning to the rood directory. Just in case.
   cd ${BASE_DIR}
 done
+
+# === Firedown: apply project-specific patches to FFmpeg source ===
+# After all components have been downloaded but before any builds start,
+# apply Firedown's modifications to the FFmpeg source tree. This runs once
+# and benefits all subsequent per-ABI builds.
+if [[ -x "${BASE_DIR}/firedown/apply-firedown-patches.sh" ]]; then
+  echo "Applying Firedown patches to FFmpeg source..."
+  "${BASE_DIR}/firedown/apply-firedown-patches.sh" "${SOURCES_DIR_ffmpeg}" || exit 1
+fi
+# === End Firedown patches ===
 
 # Main build loop
 for ABI in ${FFMPEG_ABIS_TO_BUILD[@]}
@@ -107,13 +114,10 @@ do
   do
     echo "Building the component: ${COMPONENT}"
     COMPONENT_SOURCES_DIR_VARIABLE=SOURCES_DIR_${COMPONENT}
-
     # Going to the actual source code directory of the current component
     cd ${!COMPONENT_SOURCES_DIR_VARIABLE}
-
     # and executing the component-specific build script
     source ${SCRIPTS_DIR}/${COMPONENT}/build.sh || exit 1
-
     # Returning to the root directory. Just in case.
     cd ${BASE_DIR}
   done

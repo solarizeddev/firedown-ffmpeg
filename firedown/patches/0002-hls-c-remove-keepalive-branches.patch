@@ -1,0 +1,27 @@
+# PLACEHOLDER — generate this against your target FFmpeg version
+#
+# This file is not a real patch yet. To produce one that applies cleanly:
+#
+#   1. Download FFmpeg source for your target version, e.g.:
+#        wget https://ffmpeg.org/releases/ffmpeg-8.1.tar.xz
+#        tar -xf ffmpeg-8.1.tar.xz
+#
+#   2. Run the generator from this repo's root:
+#        ./firedown/scripts/generate-hls-patch.sh /path/to/ffmpeg-8.1
+#
+#   3. The script overwrites this file with a real unified diff.
+#
+# What the patch does (when generated):
+#
+#   - In open_url(), removes the `if (is_http && c->http_persistent && *pb)`
+#     branch that calls open_url_keepalive, replacing it with a direct
+#     s->io_open call.
+#
+#   - Removes the playlist parsing keepalive branch that reuses
+#     c->playlist_pb via open_url_keepalive.
+#
+# Both changes are safe because Firedown never sets http_persistent.
+# OkHttp on the Java side handles connection pooling at the transport layer.
+#
+# The generated patch adds a FIREDOWN-HLS-PATCHED marker comment so
+# apply-firedown-patches.sh can detect when it's already been applied.
