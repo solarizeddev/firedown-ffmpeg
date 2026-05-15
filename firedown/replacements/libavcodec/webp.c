@@ -1624,56 +1624,45 @@ typedef struct AnimatedWebPContext {
 } AnimatedWebPContext;
 
 /*
- * Blend src1 (foreground) and src2 (background) into dest, in ARGB format.
- * width, height are the dimensions of src1.
- * pos_x, pos_y is the position in src2 and in dest.
+ * Blend src (foreground) into dst (background), in ARGB format.
+ * pos_x, pos_y is the position in dst.
  */
-static void blend_alpha_argb(uint8_t *dest_data[4], int dest_linesize[4],
-                             const uint8_t *src1_data[4], int src1_linesize[4],
-                             const uint8_t *src2_data[4], int src2_linesize[4],
-                             int width, int height, int pos_x, int pos_y)
+static void blend_alpha_argb(AVFrame *dst, AVFrame *src, int pos_x, int pos_y)
 {
-    for (int y = 0; y < height; y++) {
-        const uint8_t *src1 = src1_data[0] + y * src1_linesize[0];
-        const uint8_t *src2 = src2_data[0] + (pos_y + y) * src2_linesize[0] + pos_x * sizeof(uint32_t);
-        uint8_t       *dest = dest_data[0] + (pos_y + y) * dest_linesize[0] + pos_x * sizeof(uint32_t);
-        for (int x = 0; x < width; x++) {
-            int src1_alpha = src1[0];
-            int src2_alpha = src2[0];
+    for (int y = 0; y < src->height; y++) {
+        const uint8_t *src_argb = src->data[0] +          y  * src->linesize[0];
+        uint8_t       *dst_argb = dst->data[0] + (pos_y + y) * dst->linesize[0] + pos_x * sizeof(uint32_t);
+        for (int x = 0; x < src->width; x++) {
+            int src_alpha = src_argb[0];
+            int dst_alpha = dst_argb[0];
 
-            if (src1_alpha == 255) {
-                memcpy(dest, src1, sizeof(uint32_t));
-            } else if (src1_alpha == 0) {
-                memcpy(dest, src2, sizeof(uint32_t));
+            if (src_alpha == 255) {
+                memcpy(dst_argb, src_argb, sizeof(uint32_t));
+            } else if (src_alpha == 0) {
+                // no-op
             } else {
-                int tmp_alpha = (src2_alpha * (256 - src1_alpha)) >> 8;
-                int blend_alpha = src1_alpha + tmp_alpha;
+                int tmp_alpha = (dst_alpha * (256 - src_alpha)) >> 8;
+                int blend_alpha = src_alpha + tmp_alpha;
                 int scale = (1UL << 24) / blend_alpha;
 
-                dest[0] = blend_alpha;
-                dest[1] = (((uint32_t) (src1[1] * src1_alpha + src2[1] * tmp_alpha)) * scale) >> 24;
-                dest[2] = (((uint32_t) (src1[2] * src1_alpha + src2[2] * tmp_alpha)) * scale) >> 24;
-                dest[3] = (((uint32_t) (src1[3] * src1_alpha + src2[3] * tmp_alpha)) * scale) >> 24;
+                dst_argb[0] = blend_alpha;
+                dst_argb[1] = (((uint32_t) (src_argb[1] * src_alpha + dst_argb[1] * tmp_alpha)) * scale) >> 24;
+                dst_argb[2] = (((uint32_t) (src_argb[2] * src_alpha + dst_argb[2] * tmp_alpha)) * scale) >> 24;
+                dst_argb[3] = (((uint32_t) (src_argb[3] * src_alpha + dst_argb[3] * tmp_alpha)) * scale) >> 24;
             }
-            src1 += sizeof(uint32_t);
-            src2 += sizeof(uint32_t);
-            dest += sizeof(uint32_t);
+            src_argb += sizeof(uint32_t);
+            dst_argb += sizeof(uint32_t);
         }
     }
 }
 
 /*
- * Blend src1 (foreground) and src2 (background) into dest, in YUVA format.
- * width, height are the dimensions of src1.
- * pos_x, pos_y is the position in src2 and in dest.
+ * Blend src (foreground) into dst (background), in YUVA format.
+ * pos_x, pos_y is the position in dst.
  */
-static void blend_alpha_yuva(uint8_t *dest_data[4], int dest_linesize[4],
-                             const uint8_t *src1_data[4], int src1_linesize[4],
-                             int src1_format,
-                             const uint8_t *src2_data[4], int src2_linesize[4],
-                             int width, int height, int pos_x, int pos_y)
+static void blend_alpha_yuva(AVFrame *dst, AVFrame *src, int pos_x, int pos_y)
 {
-    const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(src1_format);
+    const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(src->format);
 
     int plane_y = desc->comp[0].plane;
     int plane_u = desc->comp[1].plane;
@@ -1681,89 +1670,74 @@ static void blend_alpha_yuva(uint8_t *dest_data[4], int dest_linesize[4],
     int plane_a = desc->comp[3].plane;
 
     // blend U & V planes first, because the later step may modify alpha plane
-    int w  = AV_CEIL_RSHIFT(width,  1);
-    int h  = AV_CEIL_RSHIFT(height, 1);
-    int px = AV_CEIL_RSHIFT(pos_x,  1);
-    int py = AV_CEIL_RSHIFT(pos_y,  1);
-
-    for (int y = 0; y < h; y++) {
-        int tile_h = FFMIN(height - y * 2, 2);
-        const uint8_t *src1_u = src1_data[plane_u] + y * src1_linesize[plane_u];
-        const uint8_t *src1_v = src1_data[plane_v] + y * src1_linesize[plane_v];
-        const uint8_t *src2_u = src2_data[plane_u] + (py + y) * src2_linesize[plane_u] + px;
-        const uint8_t *src2_v = src2_data[plane_v] + (py + y) * src2_linesize[plane_v] + px;
-        uint8_t       *dest_u = dest_data[plane_u] + (py + y) * dest_linesize[plane_u] + px;
-        uint8_t       *dest_v = dest_data[plane_v] + (py + y) * dest_linesize[plane_v] + px;
-        for (int x = 0; x < w; x++) {
-            int tile_w = FFMIN(width - x * 2, 2);
+    for (int y = 0; y < AV_CEIL_RSHIFT(src->height, 1); y++) {
+        int tile_h = FFMIN(src->height - y * 2, 2);
+        const uint8_t *src_u = src->data[plane_u] +                 y  * src->linesize[plane_u];
+        const uint8_t *src_v = src->data[plane_v] +                 y  * src->linesize[plane_v];
+        uint8_t       *dst_u = dst->data[plane_u] + ((pos_y >> 1) + y) * dst->linesize[plane_u] + (pos_x >> 1);
+        uint8_t       *dst_v = dst->data[plane_v] + ((pos_y >> 1) + y) * dst->linesize[plane_v] + (pos_x >> 1);
+        for (int x = 0; x < AV_CEIL_RSHIFT(src->width, 1); x++) {
+            int tile_w = FFMIN(src->width - x * 2, 2);
             // calculate the average alpha of the tile
-            int src1_alpha = 0;
-            int src2_alpha = 0;
+            int src_alpha = 0;
+            int dst_alpha = 0;
             for (int yy = 0; yy < tile_h; yy++) {
                 for (int xx = 0; xx < tile_w; xx++) {
-                    src1_alpha += src1_data[plane_a][(y * 2 + yy) * src1_linesize[plane_a] +
-                                                     (x * 2 + xx)];
-                    src2_alpha += src2_data[plane_a][((py + y) * 2 + yy) * src2_linesize[plane_a] +
-                                                     ((px + x) * 2 + xx)];
+                    src_alpha += src->data[plane_a][(y * 2 + yy) * src->linesize[plane_a] +
+                                                    (x * 2 + xx)];
+                    dst_alpha += dst->data[plane_a][(((pos_y >> 1) + y) * 2 + yy) * dst->linesize[plane_a] +
+                                                    (((pos_x >> 1) + x) * 2 + xx)];
                 }
             }
             int shift = (tile_h == 2) + (tile_w == 2);
-            src1_alpha = AV_CEIL_RSHIFT(src1_alpha, shift);
-            src2_alpha = AV_CEIL_RSHIFT(src2_alpha, shift);
+            src_alpha = AV_CEIL_RSHIFT(src_alpha, shift);
+            dst_alpha = AV_CEIL_RSHIFT(dst_alpha, shift);
 
-            if (src1_alpha == 255) {
-                *dest_u = *src1_u;
-                *dest_v = *src1_v;
-            } else if (src1_alpha == 0) {
-                *dest_u = *src2_u;
-                *dest_v = *src2_v;
+            if (src_alpha == 255) {
+                *dst_u = *src_u;
+                *dst_v = *src_v;
+            } else if (src_alpha == 0) {
+                // no-op
             } else {
-                int tmp_alpha = (src2_alpha * (256 - src1_alpha)) >> 8;
-                int blend_alpha = src1_alpha + tmp_alpha;
+                int tmp_alpha = (dst_alpha * (256 - src_alpha)) >> 8;
+                int blend_alpha = src_alpha + tmp_alpha;
                 int scale = (1UL << 24) / blend_alpha;
-                *dest_u = (((uint32_t) (*src1_u * src1_alpha + *src2_u * tmp_alpha)) * scale) >> 24;
-                *dest_v = (((uint32_t) (*src1_v * src1_alpha + *src2_v * tmp_alpha)) * scale) >> 24;
+                *dst_u = (((uint32_t) (*src_u * src_alpha + *dst_u * tmp_alpha)) * scale) >> 24;
+                *dst_v = (((uint32_t) (*src_v * src_alpha + *dst_v * tmp_alpha)) * scale) >> 24;
             }
-            src1_u++;
-            src1_v++;
-            src2_u++;
-            src2_v++;
-            dest_u++;
-            dest_v++;
+            src_u += 1;
+            src_v += 1;
+            dst_u += 1;
+            dst_v += 1;
         }
     }
 
     // blend Y & A planes
-    for (int y = 0; y < height; y++) {
-        const uint8_t *src1_y = src1_data[plane_y] + y * src1_linesize[plane_y];
-        const uint8_t *src1_a = src1_data[plane_a] + y * src1_linesize[plane_a];
-        const uint8_t *src2_y = src2_data[plane_y] + (pos_y + y) * src2_linesize[plane_y] + pos_x;
-        const uint8_t *src2_a = src2_data[plane_a] + (pos_y + y) * src2_linesize[plane_a] + pos_x;
-        uint8_t       *dest_y = dest_data[plane_y] + (pos_y + y) * dest_linesize[plane_y] + pos_x;
-        uint8_t       *dest_a = dest_data[plane_a] + (pos_y + y) * dest_linesize[plane_a] + pos_x;
-        for (int x = 0; x < width; x++) {
-            int src1_alpha = *src1_a;
-            int src2_alpha = *src2_a;
+    for (int y = 0; y < src->height; y++) {
+        const uint8_t *src_y = src->data[plane_y] +          y  * src->linesize[plane_y];
+        const uint8_t *src_a = src->data[plane_a] +          y  * src->linesize[plane_a];
+        uint8_t       *dst_y = dst->data[plane_y] + (pos_y + y) * dst->linesize[plane_y] + pos_x;
+        uint8_t       *dst_a = dst->data[plane_a] + (pos_y + y) * dst->linesize[plane_a] + pos_x;
+        for (int x = 0; x < src->width; x++) {
+            int src_alpha = *src_a;
+            int dst_alpha = *dst_a;
 
-            if (src1_alpha == 255) {
-                *dest_y = *src1_y;
-                *dest_a = 255;
-            } else if (src1_alpha == 0) {
-                *dest_y = *src2_y;
-                *dest_a = src2_alpha;
+            if (src_alpha == 255) {
+                *dst_y = *src_y;
+                *dst_a = 255;
+            } else if (src_alpha == 0) {
+                // no-op
             } else {
-                int tmp_alpha = (src2_alpha * (256 - src1_alpha)) >> 8;
-                int blend_alpha = src1_alpha + tmp_alpha;
+                int tmp_alpha = (dst_alpha * (256 - src_alpha)) >> 8;
+                int blend_alpha = src_alpha + tmp_alpha;
                 int scale = (1UL << 24) / blend_alpha;
-                *dest_y = (((uint32_t) (*src1_y * src1_alpha + *src2_y * tmp_alpha)) * scale) >> 24;
-                *dest_a = blend_alpha;
+                *dst_y = (((uint32_t) (*src_y * src_alpha + *dst_y * tmp_alpha)) * scale) >> 24;
+                *dst_a = blend_alpha;
             }
-            src1_y++;
-            src1_a++;
-            src2_y++;
-            src2_a++;
-            dest_y++;
-            dest_a++;
+            src_y += 1;
+            src_a += 1;
+            dst_y += 1;
+            dst_a += 1;
         }
     }
 }
@@ -1796,22 +1770,22 @@ static void copy_yuva2argb(AVFrame *dst, AVFrame *src, int pos_x, int pos_y)
     int plane_a = src_desc->comp[3].plane;
 
     for (int y = 0; y < src->height; y++) {
-        uint8_t *dest = dst->data[0] + (pos_y + y) * dst->linesize[0] + pos_x * 4;
-        uint8_t *src_y = src->data[plane_y] +  y       * src->linesize[plane_y];
-        uint8_t *src_u = src->data[plane_u] + (y >> 1) * src->linesize[plane_u];
-        uint8_t *src_v = src->data[plane_v] + (y >> 1) * src->linesize[plane_v];
-        uint8_t *src_a = NULL;
+        const uint8_t *src_y = src->data[plane_y] +  y       * src->linesize[plane_y];
+        const uint8_t *src_u = src->data[plane_u] + (y >> 1) * src->linesize[plane_u];
+        const uint8_t *src_v = src->data[plane_v] + (y >> 1) * src->linesize[plane_v];
+        const uint8_t *src_a = NULL;
+        uint8_t       *dst_argb = dst->data[0] + (pos_y + y) * dst->linesize[0] + pos_x * 4;
         if (alpha)
             src_a = src->data[plane_a] + y * src->linesize[plane_a];
 
         for (int x = 0; x < src->width; x++) {
-            webp_yuva2argb(dest, *src_y, *src_u, *src_v, (alpha ? *src_a : 255));
+            webp_yuva2argb(dst_argb, *src_y, *src_u, *src_v, (alpha ? *src_a : 255));
             src_y += 1;
             src_u += x & 1;
             src_v += x & 1;
             if (alpha)
                 src_a += 1;
-            dest  += 4;
+            dst_argb += sizeof(uint32_t);
         }
     }
 }
@@ -1826,18 +1800,18 @@ static void blend_yuva2argb(AVFrame *dst, AVFrame *src, int pos_x, int pos_y)
     int plane_a = src_desc->comp[3].plane;
 
     for (int y = 0; y < src->height; y++) {
-        uint8_t *dest = dst->data[0] + (pos_y + y) * dst->linesize[0] + pos_x * 4;
-        uint8_t *src_y = src->data[plane_y] +  y       * src->linesize[plane_y];
-        uint8_t *src_u = src->data[plane_u] + (y >> 1) * src->linesize[plane_u];
-        uint8_t *src_v = src->data[plane_v] + (y >> 1) * src->linesize[plane_v];
-        uint8_t *src_a = src->data[plane_a] +  y       * src->linesize[plane_a];
+        const uint8_t *src_y = src->data[plane_y] +  y       * src->linesize[plane_y];
+        const uint8_t *src_u = src->data[plane_u] + (y >> 1) * src->linesize[plane_u];
+        const uint8_t *src_v = src->data[plane_v] + (y >> 1) * src->linesize[plane_v];
+        const uint8_t *src_a = src->data[plane_a] +  y       * src->linesize[plane_a];
+        uint8_t       *dst_argb = dst->data[0] + (pos_y + y) * dst->linesize[0] + pos_x * 4;
 
         for (int x = 0; x < src->width; x++) {
-            int dst_alpha = dest[0];
             int src_alpha = *src_a;
+            int dst_alpha = dst_argb[0];
 
             if (src_alpha == 255) {
-                webp_yuva2argb(dest, *src_y, *src_u, *src_v, src_alpha);
+                webp_yuva2argb(dst_argb, *src_y, *src_u, *src_v, src_alpha);
             } else if (src_alpha == 0) {
                 // no-op
             } else {
@@ -1848,17 +1822,17 @@ static void blend_yuva2argb(AVFrame *dst, AVFrame *src, int pos_x, int pos_y)
 
                 webp_yuva2argb(tmp, *src_y, *src_u, *src_v, src_alpha);
 
-                dest[0] = blend_alpha;
-                dest[1] = (((uint32_t) (tmp[1] * src_alpha + dest[1] * tmp_alpha)) * scale) >> 24;
-                dest[2] = (((uint32_t) (tmp[2] * src_alpha + dest[2] * tmp_alpha)) * scale) >> 24;
-                dest[3] = (((uint32_t) (tmp[3] * src_alpha + dest[3] * tmp_alpha)) * scale) >> 24;
+                dst_argb[0] = blend_alpha;
+                dst_argb[1] = (((uint32_t) (tmp[1] * src_alpha + dst_argb[1] * tmp_alpha)) * scale) >> 24;
+                dst_argb[2] = (((uint32_t) (tmp[2] * src_alpha + dst_argb[2] * tmp_alpha)) * scale) >> 24;
+                dst_argb[3] = (((uint32_t) (tmp[3] * src_alpha + dst_argb[3] * tmp_alpha)) * scale) >> 24;
             }
 
             src_y += 1;
             src_u += x & 1;
             src_v += x & 1;
             src_a += 1;
-            dest  += 4;
+            dst_argb += sizeof(uint32_t);
         }
     }
 }
@@ -1874,10 +1848,14 @@ static int blend_subframe_into_canvas(AnimatedWebPContext *s)
 
         if (canvas->format == AV_PIX_FMT_ARGB) {
             if (canvas->format == frame->format) {
+                const uint8_t *src = frame->data[0];
+                uint8_t       *dst = canvas->data[0] +
+                                     s->pos_y * canvas->linesize[0] +
+                                     s->pos_x * sizeof(uint32_t);
                 for (int y = 0; y < s->w.height; y++) {
-                    const uint32_t *src = (uint32_t *) (frame->data[0] + y * frame->linesize[0]);
-                    uint32_t *dst = (uint32_t *) (canvas->data[0] + (s->pos_y + y) * canvas->linesize[0]) + s->pos_x;
                     memcpy(dst, src, s->w.width * sizeof(uint32_t));
+                    src += frame->linesize[0];
+                    dst += canvas->linesize[0];
                 }
             } else {
                 copy_yuva2argb(canvas, frame, s->pos_x, s->pos_y);
@@ -1886,37 +1864,27 @@ static int blend_subframe_into_canvas(AnimatedWebPContext *s)
             const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(frame->format);
 
             for (int comp = 0; comp < desc->nb_components; comp++) {
-                int plane  = desc->comp[comp].plane;
-                int width  = s->w.width;
-                int height = s->w.height;
-                int pos_x  = s->pos_x;
-                int pos_y  = s->pos_y;
-                if (comp == 1 || comp == 2) {
-                    width  = AV_CEIL_RSHIFT(width,  1);
-                    height = AV_CEIL_RSHIFT(height, 1);
-                    pos_x  = AV_CEIL_RSHIFT(pos_x,  1);
-                    pos_y  = AV_CEIL_RSHIFT(pos_y,  1);
-                }
-
-                for (int y = 0; y < height; y++) {
-                    const uint8_t *src = frame->data[plane] + y * frame->linesize[plane];
-                    uint8_t *dst = canvas->data[plane] + (pos_y + y) * canvas->linesize[plane] + pos_x;
-                    memcpy(dst, src, width);
+                int plane = desc->comp[comp].plane;
+                int shift = (comp == 1 || comp == 2) ? 1 : 0;
+                const uint8_t *src = frame->data[plane];
+                uint8_t       *dst = canvas->data[plane] +
+                                     (s->pos_y >> shift) * canvas->linesize[plane] +
+                                     (s->pos_x >> shift);
+                for (int y = 0; y < AV_CEIL_RSHIFT(s->w.height, shift); y++) {
+                    memcpy(dst, src, AV_CEIL_RSHIFT(s->w.width, shift));
+                    src += frame->linesize[plane];
+                    dst += canvas->linesize[plane];
                 }
             }
 
             if (canvas->format == AV_PIX_FMT_YUVA420P && desc->nb_components < 4) {
                 // frame does not have alpha, set alpha to 255
                 const AVPixFmtDescriptor *canvas_desc = av_pix_fmt_desc_get(canvas->format);
-                int plane  = canvas_desc->comp[3].plane;
-                int width  = s->w.width;
-                int height = s->w.height;
-                int pos_x  = s->pos_x;
-                int pos_y  = s->pos_y;
-
-                for (int y = 0; y < height; y++) {
-                    uint8_t *dst = canvas->data[plane] + (pos_y + y) * canvas->linesize[plane] + pos_x;
-                    memset(dst, 255, width);
+                int plane = canvas_desc->comp[3].plane;
+                uint8_t *dst = canvas->data[plane] + s->pos_y * canvas->linesize[plane] + s->pos_x;
+                for (int y = 0; y < s->w.height; y++) {
+                    memset(dst, 255, s->w.width);
+                    dst += canvas->linesize[plane];
                 }
             }
         }
@@ -1925,19 +1893,12 @@ static int blend_subframe_into_canvas(AnimatedWebPContext *s)
 
         if (canvas->format == AV_PIX_FMT_ARGB) {
             if (canvas->format == frame->format) {
-                blend_alpha_argb(canvas->data, canvas->linesize,
-                                 (const uint8_t **) frame->data, frame->linesize,
-                                 (const uint8_t **) canvas->data, canvas->linesize,
-                                 s->w.width, s->w.height, s->pos_x, s->pos_y);
+                blend_alpha_argb(canvas, frame, s->pos_x, s->pos_y);
             } else {
                 blend_yuva2argb(canvas, frame, s->pos_x, s->pos_y);
             }
         } else /* if (canvas->format == AV_PIX_FMT_YUVA420P) */ {
-            blend_alpha_yuva(canvas->data, canvas->linesize,
-                             (const uint8_t **) frame->data, frame->linesize,
-                             frame->format,
-                             (const uint8_t **) canvas->data, canvas->linesize,
-                             s->w.width, s->w.height, s->pos_x, s->pos_y);
+            blend_alpha_yuva(canvas, frame, s->pos_x, s->pos_y);
         }
     }
 
@@ -1969,9 +1930,7 @@ static void fill_canvas_rect(AnimatedWebPContext *s, int pos_x, int pos_y, int w
         for (int comp = 0; comp < desc->nb_components; comp++) {
             int shift = (comp == 1 || comp == 2) ? 1 : 0;
             int plane = desc->comp[comp].plane;
-            uint8_t *dst = canvas->data[plane] +
-                           AV_CEIL_RSHIFT(pos_y, shift) * canvas->linesize[plane] +
-                           AV_CEIL_RSHIFT(pos_x, shift);
+            uint8_t *dst = canvas->data[plane] + (pos_y >> shift) * canvas->linesize[plane] + (pos_x >> shift);
             for (int y = 0; y < AV_CEIL_RSHIFT(height, shift); y++) {
                 memset(dst, s->background_yuva[plane], AV_CEIL_RSHIFT(width, shift));
                 dst += canvas->linesize[plane];
@@ -2257,6 +2216,19 @@ const FFCodec ff_webp_anim_decoder = {
     .init           = webp_anim_decode_init,
     FF_CODEC_DECODE_CB(webp_anim_decode_frame),
     .close          = webp_anim_decode_close,
+    /* FIREDOWN: Ramiro's upstream sets
+     *   .p.capabilities = AV_CODEC_CAP_DR1 | AV_CODEC_CAP_SLICE_THREADS,
+     *   .caps_internal  = FF_CODEC_CAP_USES_PROGRESSFRAMES,
+     * but the codec implements neither slice-thread callbacks nor progress-
+     * frame helpers, and FF_CODEC_CAP_USES_PROGRESSFRAMES implies frame
+     * threading per ffmpeg's internal docs. With both flags set,
+     * ff_decode_preinit tried to wire up threading state we don't provide,
+     * which manifested as a NULL deref on Android during early debugging.
+     * The actual crash root-cause turned out to be a separate sort-order bug
+     * in codec_desc.c (now fixed in apply-firedown-patches.sh), but we keep
+     * these caps off because they are still semantically wrong for an
+     * inherently sequential animated decoder (frame N depends on the canvas
+     * left by frame N-1, so no frame/slice parallelism is possible). */
     .p.capabilities = AV_CODEC_CAP_DR1,
 };
 #endif /* CONFIG_WEBP_ANIM_DECODER */
