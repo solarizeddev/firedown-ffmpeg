@@ -35,7 +35,13 @@ Network:
   - --enable-protocol=http,https: only protocols we keep
 
 Component allow-lists (disable-all then re-enable the names we need):
-  - encoders: aac (audio re-mux), gif (preview generation)
+  - encoders: aac (audio re-mux), gif (preview generation),
+              mjpeg (JPEG image output — Firedown re-encodes downloaded
+                     images to .jpg for normalized storage / thumbnails),
+              png, bmp (other image output formats).
+              Note: ffmpeg has no native WebP encoder — encoding to WebP
+              requires the external libwebp library, which is not wired
+              in here.
   - decoders: h264,hevc,vp8,vp9,av1,mpeg4,mjpeg,aac,aac_latm,mp3,opus,
     vorbis,flac,ac3,eac3,pcm_s16le,pcm_s16be,pcm_u8,gif,png,webp,bmp,
     tiff,apng
@@ -128,6 +134,9 @@ and re-application against future upstream merges.
 +  --disable-encoders \
 +  --enable-encoder=aac \
 +  --enable-encoder=gif \
++  --enable-encoder=mjpeg \
++  --enable-encoder=png \
++  --enable-encoder=bmp \
 +  --disable-decoders \
 +  --enable-decoder=h264,hevc,vp8,vp9,av1,mpeg4,mjpeg,aac,aac_latm,mp3,opus,vorbis,flac,ac3,eac3,pcm_s16le,pcm_s16be,pcm_u8,gif,png,webp,bmp,tiff,apng \
 +  --disable-demuxers \

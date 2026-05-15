@@ -68,6 +68,9 @@ EXTRA_LDFLAGS="-Wl,-z,max-page-size=16384 -Wl,--gc-sections $DEP_LD_FLAGS"
   --disable-encoders \
   --enable-encoder=aac \
   --enable-encoder=gif \
+  --enable-encoder=mjpeg \
+  --enable-encoder=png \
+  --enable-encoder=bmp \
   --disable-decoders \
   --enable-decoder=h264,hevc,vp8,vp9,av1,mpeg4,mjpeg,aac,aac_latm,mp3,opus,vorbis,flac,ac3,eac3,pcm_s16le,pcm_s16be,pcm_u8,gif,png,webp,bmp,tiff,apng \
   --disable-demuxers \
