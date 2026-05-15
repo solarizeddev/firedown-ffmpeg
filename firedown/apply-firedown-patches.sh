@@ -218,8 +218,8 @@ desc_anchor = '''        .id        = AV_CODEC_ID_WEBP,'''
 desc_path = os.path.join(ff, 'libavcodec/codec_desc.c')
 with open(desc_path) as f:
     desc_text = f.read()
-if 'FIREDOWN-WEBP-ANIM-DESC' in desc_text:
-    pass
+if 'AV_CODEC_ID_WEBP_ANIM' in desc_text:
+    pass  # descriptor entry already present
 else:
     idx = desc_text.find(desc_anchor)
     if idx < 0:
@@ -287,30 +287,55 @@ else:
 # libavcodec/Makefile — link webp.o when WEBP_ANIM_DECODER enabled.
 # (webp.o is already pulled in for CONFIG_WEBP_DECODER; this just adds it for
 # the new flag so the link works even if someone disables the still decoder.)
-if edit('libavcodec/Makefile',
-        marker='FIREDOWN-WEBP-ANIM-DECODER-OBJ',
-        find='OBJS-$(CONFIG_WEBP_DECODER)            += webp.o',
-        replacement='\nOBJS-$(CONFIG_WEBP_ANIM_DECODER)       += webp.o # FIREDOWN-WEBP-ANIM-DECODER-OBJ'):
+# Idempotency check is on the canonical CONFIG_ flag, not our marker.
+makef_cd_path = os.path.join(ff, 'libavcodec/Makefile')
+with open(makef_cd_path) as f:
+    makef_cd_text = f.read()
+if 'CONFIG_WEBP_ANIM_DECODER' in makef_cd_text:
+    pass  # already present (by us or by upstream)
+else:
+    import re
+    # Look for the existing CONFIG_WEBP_DECODER line. The whitespace between
+    # the variable and `+= webp.o` varies between ffmpeg versions, so use a
+    # loose regex rather than a fixed-string anchor.
+    m = re.search(r'^OBJS-\$\(CONFIG_WEBP_DECODER\)[ \t]*\+=[^\n]+$',
+                  makef_cd_text, flags=re.M)
+    if not m:
+        sys.stderr.write("ERROR: libavcodec/Makefile — CONFIG_WEBP_DECODER anchor not found\n")
+        sys.exit(14)
+    insertion = '\nOBJS-$(CONFIG_WEBP_ANIM_DECODER)       += webp.o # FIREDOWN-WEBP-ANIM-DECODER-OBJ'
+    new_text = makef_cd_text[:m.end()] + insertion + makef_cd_text[m.end():]
+    with open(makef_cd_path, 'w') as f:
+        f.write(new_text)
     did.append('libavcodec/Makefile: WEBP_ANIM_DECODER += webp.o')
 
 # libavformat/Makefile — compile webp_anim_dec.o when WEBP_ANIM_DEMUXER enabled.
-# Anchor on an existing webp-related line.
+# Idempotency check is on the canonical content (CONFIG_WEBP_ANIM_DEMUXER as a
+# Makefile var), not on our marker — some upstream trees already ship this line.
+# Anchors allow multi-file OBJS values (e.g. `+= img2dec.o img2.o`), unlike the
+# previous regex.
 makef_path = os.path.join(ff, 'libavformat/Makefile')
 with open(makef_path) as f:
     makef_text = f.read()
-if 'FIREDOWN-WEBP-ANIM-DEMUXER-OBJ' in makef_text:
-    pass
+if 'CONFIG_WEBP_ANIM_DEMUXER' in makef_text:
+    pass  # already present (by us or by upstream)
 else:
-    # Look for any line referencing webp in libavformat/Makefile and append after it.
     import re
-    m = re.search(r'^OBJS-\$\(CONFIG_WEBP_PIPE_DEMUXER\)[ \t]*\+=[ \t]*[A-Za-z0-9_./]+$',
-                  makef_text, flags=re.M)
+    anchors = [
+        r'^OBJS-\$\(CONFIG_WEBM_CHUNK_MUXER\)[ \t]*\+=[^\n]+$',
+        r'^OBJS-\$\(CONFIG_WEBP_MUXER\)[ \t]*\+=[^\n]+$',
+        r'^OBJS-\$\(CONFIG_WEBVTT_DEMUXER\)[ \t]*\+=[^\n]+$',
+        r'^OBJS-\$\(CONFIG_IMAGE_WEBP_PIPE_DEMUXER\)[ \t]*\+=[^\n]+$',
+        r'^OBJS-\$\(CONFIG_IMAGE2_DEMUXER\)[ \t]*\+=[^\n]+$',
+        r'^OBJS-\$\(CONFIG_MOV_DEMUXER\)[ \t]*\+=[^\n]+$',
+    ]
+    m = None
+    for a in anchors:
+        m = re.search(a, makef_text, flags=re.M)
+        if m:
+            break
     if not m:
-        # Try a looser anchor — img2dec is usually nearby
-        m = re.search(r'^OBJS-\$\(CONFIG_IMAGE2_DEMUXER\)[ \t]*\+=[ \t]*[A-Za-z0-9_./]+$',
-                      makef_text, flags=re.M)
-    if not m:
-        sys.stderr.write("ERROR: libavformat/Makefile — anchor (WEBP_PIPE_DEMUXER or IMAGE2_DEMUXER) not found\n")
+        sys.stderr.write("ERROR: libavformat/Makefile — no usable anchor found\n")
         sys.exit(13)
     insertion = '\nOBJS-$(CONFIG_WEBP_ANIM_DEMUXER)         += webp_anim_dec.o # FIREDOWN-WEBP-ANIM-DEMUXER-OBJ'
     new_text = makef_text[:m.end()] + insertion + makef_text[m.end():]
