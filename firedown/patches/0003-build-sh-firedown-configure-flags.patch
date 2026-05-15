@@ -66,7 +66,15 @@ Component allow-lists (disable-all then re-enable the names we need):
     flac,mjpeg,gif
   - bsfs: aac_adtstoasc,h264_mp4toannexb,hevc_mp4toannexb,
     extract_extradata,vp9_superframe (critical for HLS->MP4 remux)
-  - filters: palettegen,paletteuse,split,fps,scale (GIF preview chain)
+  - filters:
+      Video / GIF preview chain: palettegen,paletteuse,split,fps,scale
+      Audio re-encode / extract chain: aformat,asetnsamples,aresample,anull
+        (aformat + asetnsamples are required by the AAC encode path —
+         Firedown's encoder.c builds a filter graph like
+         `aformat=...,asetnsamples=n=1024:p=0` and configure_filtergraph
+         will fail with AVERROR_FILTER_NOT_FOUND if either is missing.
+         aresample handles sample-rate conversion; anull is a cheap
+         pass-through used when no transform is needed.)
 
 Devices / misc:
   - --disable-outdevs --disable-indevs: no input/output devices on Android
@@ -135,6 +143,10 @@ and re-application against future upstream merges.
 +  --enable-filter=split \
 +  --enable-filter=fps \
 +  --enable-filter=scale \
++  --enable-filter=aformat \
++  --enable-filter=asetnsamples \
++  --enable-filter=aresample \
++  --enable-filter=anull \
 +  --disable-outdevs \
 +  --disable-indevs \
    --target-os=android \

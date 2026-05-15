@@ -84,6 +84,10 @@ EXTRA_LDFLAGS="-Wl,-z,max-page-size=16384 -Wl,--gc-sections $DEP_LD_FLAGS"
   --enable-filter=split \
   --enable-filter=fps \
   --enable-filter=scale \
+  --enable-filter=aformat \
+  --enable-filter=asetnsamples \
+  --enable-filter=aresample \
+  --enable-filter=anull \
   --disable-outdevs \
   --disable-indevs \
   --target-os=android \
