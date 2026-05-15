@@ -209,7 +209,7 @@ did = []
 if edit('libavcodec/codec_id.h',
         marker='AV_CODEC_ID_WEBP_ANIM',
         find='    AV_CODEC_ID_WEBP,\n',
-        replacement='    AV_CODEC_ID_WEBP_ANIM, /* FIREDOWN-WEBP-ANIM-CODEC-ID */\n'):
+        replacement='    AV_CODEC_ID_WEBP_ANIM,\n'):
     did.append('codec_id.h: AV_CODEC_ID_WEBP_ANIM')
 
 # libavcodec/codec_desc.c — add descriptor entry. Anchor on the closing `},` of
@@ -232,7 +232,6 @@ else:
         sys.exit(11)
     end += len('\n    },\n')
     insertion = (
-        '    /* FIREDOWN-WEBP-ANIM-DESC */\n'
         '    {\n'
         '        .id        = AV_CODEC_ID_WEBP_ANIM,\n'
         '        .type      = AVMEDIA_TYPE_VIDEO,\n'
@@ -246,11 +245,16 @@ else:
         f.write(desc_text[:end] + insertion + desc_text[end:])
     did.append('codec_desc.c: webp_anim descriptor')
 
-# libavcodec/allcodecs.c — extern declaration for ff_webp_anim_decoder
+# libavcodec/allcodecs.c — extern declaration for ff_webp_anim_decoder.
+# IMPORTANT: do NOT add a trailing /* ... */ comment to the extern line.
+# ffmpeg's configure auto-discovers codecs by awk-parsing this file, and
+# extra tokens after the symbol name bleed into the discovered codec name,
+# yielding a `FIREDOWN-...=yes` shell-eval that explodes with "command not
+# found" since hyphens aren't valid identifier chars.
 if edit('libavcodec/allcodecs.c',
         marker='ff_webp_anim_decoder',
         find='extern const FFCodec ff_webp_decoder;\n',
-        replacement='extern const FFCodec ff_webp_anim_decoder; /* FIREDOWN-WEBP-ANIM-DECODER-EXTERN */\n'):
+        replacement='extern const FFCodec ff_webp_anim_decoder;\n'):
     did.append('allcodecs.c: ff_webp_anim_decoder extern')
 
 # libavformat/allformats.c — extern declaration for ff_webp_anim_demuxer.
@@ -273,7 +277,7 @@ else:
         if anchor in allf_text:
             new_text = allf_text.replace(
                 anchor,
-                anchor + 'extern const FFInputFormat  ff_webp_anim_demuxer; /* FIREDOWN-WEBP-ANIM-DEMUXER-EXTERN */\n',
+                anchor + 'extern const FFInputFormat  ff_webp_anim_demuxer;\n',
                 1,
             )
             with open(allf_path, 'w') as f:
@@ -303,7 +307,7 @@ else:
     if not m:
         sys.stderr.write("ERROR: libavcodec/Makefile — CONFIG_WEBP_DECODER anchor not found\n")
         sys.exit(14)
-    insertion = '\nOBJS-$(CONFIG_WEBP_ANIM_DECODER)       += webp.o # FIREDOWN-WEBP-ANIM-DECODER-OBJ'
+    insertion = '\nOBJS-$(CONFIG_WEBP_ANIM_DECODER)       += webp.o'
     new_text = makef_cd_text[:m.end()] + insertion + makef_cd_text[m.end():]
     with open(makef_cd_path, 'w') as f:
         f.write(new_text)
@@ -337,7 +341,7 @@ else:
     if not m:
         sys.stderr.write("ERROR: libavformat/Makefile — no usable anchor found\n")
         sys.exit(13)
-    insertion = '\nOBJS-$(CONFIG_WEBP_ANIM_DEMUXER)         += webp_anim_dec.o # FIREDOWN-WEBP-ANIM-DEMUXER-OBJ'
+    insertion = '\nOBJS-$(CONFIG_WEBP_ANIM_DEMUXER)         += webp_anim_dec.o'
     new_text = makef_text[:m.end()] + insertion + makef_text[m.end():]
     with open(makef_path, 'w') as f:
         f.write(new_text)
