@@ -237,7 +237,7 @@ else:
         '        .id        = AV_CODEC_ID_WEBP_ANIM,\n'
         '        .type      = AVMEDIA_TYPE_VIDEO,\n'
         '        .name      = "webp_anim",\n'
-        '        .long_name = NULL_IF_CONFIG_SMALL("Animated WebP image"),\n'
+        '        .long_name = NULL_IF_CONFIG_SMALL("Animated WebP"),\n'
         '        .props     = AV_CODEC_PROP_LOSSY | AV_CODEC_PROP_LOSSLESS,\n'
         '        .mime_types= MT("image/webp"),\n'
         '    },\n'
@@ -343,25 +343,45 @@ else:
         f.write(new_text)
     did.append('libavformat/Makefile: WEBP_ANIM_DEMUXER += webp_anim_dec.o')
 
-# configure — register webp_anim in DECODER_LIST and DEMUXER_LIST.
+# configure — three edits, each independently idempotent:
+#   (1) DECODER_LIST: add `webp_anim` after the `webp` entry
+#   (2) DEMUXER_LIST: add `webp_anim` after the `webp_pipe` entry
+#   (3) Dependency rule: webp_anim_decoder_select="vp8_decoder" — added
+#       after the existing webp_decoder_select line. WITHOUT this, configure's
+#       dep walker can't resolve webp_anim_decoder and enters an infinite loop
+#       during `check_deps`. This was the root cause of the build hang.
 cfg_path = os.path.join(ff, 'configure')
 with open(cfg_path) as f:
     cfg_text = f.read()
-changed_cfg = False
-if 'webp_anim' not in cfg_text:
-    # DECODER_LIST entry — insert after the `webp` decoder line.
-    import re
-    new_text, n = re.subn(r'(\n    webp)(\n)', r'\1\n    webp_anim\2', cfg_text, count=2)
-    # subn with count=2 covers DECODER_LIST + (optionally) DEMUXER_LIST if both
-    # have `webp` followed by a different next entry. But the DEMUXER_LIST entry
-    # is `webp_pipe`, not `webp`, so the second `webp` line we want to hit may
-    # not exist. We need a separate insert for the DEMUXER_LIST `webp_pipe` line.
-    new_text = re.sub(r'(\n    webp_pipe)(\n)', r'\1\n    webp_anim\2', new_text, count=1)
-    if new_text != cfg_text:
-        with open(cfg_path, 'w') as f:
-            f.write(new_text)
+import re
+
+# (1) and (2): list entries
+orig_cfg = cfg_text
+if re.search(r'^    webp_anim$', cfg_text, flags=re.M) is None:
+    cfg_text = re.sub(r'(\n    webp)(\n)', r'\1\n    webp_anim\2', cfg_text, count=1)
+    cfg_text = re.sub(r'(\n    webp_pipe)(\n)', r'\1\n    webp_anim\2', cfg_text, count=1)
+    if cfg_text != orig_cfg:
         did.append('configure: webp_anim added to DECODER_LIST / DEMUXER_LIST')
-        changed_cfg = True
+
+# (3) dependency select rule
+if 'webp_anim_decoder_select' not in cfg_text:
+    select_anchor = 'webp_decoder_select="vp8_decoder"'
+    if select_anchor in cfg_text:
+        cfg_text = cfg_text.replace(
+            select_anchor,
+            select_anchor + '\nwebp_anim_decoder_select="vp8_decoder"',
+            1,
+        )
+        did.append('configure: webp_anim_decoder_select="vp8_decoder"')
+    else:
+        sys.stderr.write(
+            "ERROR: configure — webp_decoder_select anchor not found; "
+            "cannot wire webp_anim_decoder_select\n")
+        sys.exit(15)
+
+if cfg_text != orig_cfg:
+    with open(cfg_path, 'w') as f:
+        f.write(cfg_text)
 
 for line in did:
     print(f'[firedown]   {line}')
