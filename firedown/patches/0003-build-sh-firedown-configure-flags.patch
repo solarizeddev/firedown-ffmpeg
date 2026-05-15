@@ -53,12 +53,13 @@ Component allow-lists (disable-all then re-enable the names we need):
     JPEG XL and SVG are intentionally omitted — they require external
     libjxl/librsvg respectively.)
   - demuxers: mov,matroska,hls,dash,mpegts,flv,webm_dash_manifest,aac,
-    mp3,ogg,flac,wav,m4v,image2,webp_pipe,heif,ico,apng
+    mp3,ogg,flac,wav,m4v,image2,webp_pipe,heif,ico,apng,gif
     (image2 is the file-based image demuxer covering JPEG/PNG/BMP/TIFF/
-    GIF/WebP-as-file. webp_pipe handles raw/piped WebP. heif handles
-    HEIC/AVIF and properly parses tiled images and image collections.
-    ico handles favicon files. apng is the dedicated animated PNG
-    demuxer.)
+    single-frame-GIF/WebP-as-file. webp_pipe handles raw/piped WebP.
+    heif handles HEIC/AVIF and properly parses tiled images and image
+    collections. ico handles favicon files. apng is the dedicated
+    animated PNG demuxer. gif is the dedicated animated-GIF demuxer —
+    image2 only returns a single still frame for GIF inputs.)
   - muxers: mp4,mov,ipod,matroska,webm,mpegts,adts,gif,mp3,ogg,flac,wav
     (hls/dash/hds are NOT in the allow-list — Firedown downloads, it
     doesn't stream)
@@ -130,7 +131,7 @@ and re-application against future upstream merges.
 +  --disable-decoders \
 +  --enable-decoder=h264,hevc,vp8,vp9,av1,mpeg4,mjpeg,aac,aac_latm,mp3,opus,vorbis,flac,ac3,eac3,pcm_s16le,pcm_s16be,pcm_u8,gif,png,webp,bmp,tiff,apng \
 +  --disable-demuxers \
-+  --enable-demuxer=mov,matroska,hls,dash,mpegts,flv,webm_dash_manifest,aac,mp3,ogg,flac,wav,m4v,image2,webp_pipe,heif,ico,apng \
++  --enable-demuxer=mov,matroska,hls,dash,mpegts,flv,webm_dash_manifest,aac,mp3,ogg,flac,wav,m4v,image2,webp_pipe,heif,ico,apng,gif \
 +  --disable-muxers \
 +  --enable-muxer=mp4,mov,ipod,matroska,webm,mpegts,adts,gif,mp3,ogg,flac,wav \
 +  --disable-parsers \
