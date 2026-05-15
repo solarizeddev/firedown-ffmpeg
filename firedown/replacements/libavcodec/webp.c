@@ -45,8 +45,6 @@
 
 #include "config_components.h"
 
-#include <string.h>
-
 #include "libavutil/colorspace.h"
 #include "libavutil/imgutils.h"
 #include "libavutil/mem.h"
@@ -1685,11 +1683,8 @@ static void blend_alpha_yuva(uint8_t *dest_data[4], int dest_linesize[4],
     // blend U & V planes first, because the later step may modify alpha plane
     int w  = AV_CEIL_RSHIFT(width,  1);
     int h  = AV_CEIL_RSHIFT(height, 1);
-    /* pos_x and pos_y are always even (the ANMF parser doubles them on
-     * read), so a plain right-shift suffices and is cheaper than the
-     * generic AV_CEIL_RSHIFT. */
-    int px = pos_x >> 1;
-    int py = pos_y >> 1;
+    int px = AV_CEIL_RSHIFT(pos_x,  1);
+    int py = AV_CEIL_RSHIFT(pos_y,  1);
 
     for (int y = 0; y < h; y++) {
         int tile_h = FFMIN(height - y * 2, 2);
@@ -1801,11 +1796,11 @@ static void copy_yuva2argb(AVFrame *dst, AVFrame *src, int pos_x, int pos_y)
     int plane_a = src_desc->comp[3].plane;
 
     for (int y = 0; y < src->height; y++) {
-        uint8_t       *dest  = dst->data[0] + (pos_y + y) * dst->linesize[0] + pos_x * 4;
-        const uint8_t *src_y = src->data[plane_y] +  y       * src->linesize[plane_y];
-        const uint8_t *src_u = src->data[plane_u] + (y >> 1) * src->linesize[plane_u];
-        const uint8_t *src_v = src->data[plane_v] + (y >> 1) * src->linesize[plane_v];
-        const uint8_t *src_a = NULL;
+        uint8_t *dest = dst->data[0] + (pos_y + y) * dst->linesize[0] + pos_x * 4;
+        uint8_t *src_y = src->data[plane_y] +  y       * src->linesize[plane_y];
+        uint8_t *src_u = src->data[plane_u] + (y >> 1) * src->linesize[plane_u];
+        uint8_t *src_v = src->data[plane_v] + (y >> 1) * src->linesize[plane_v];
+        uint8_t *src_a = NULL;
         if (alpha)
             src_a = src->data[plane_a] + y * src->linesize[plane_a];
 
@@ -1831,11 +1826,11 @@ static void blend_yuva2argb(AVFrame *dst, AVFrame *src, int pos_x, int pos_y)
     int plane_a = src_desc->comp[3].plane;
 
     for (int y = 0; y < src->height; y++) {
-        uint8_t       *dest  = dst->data[0] + (pos_y + y) * dst->linesize[0] + pos_x * 4;
-        const uint8_t *src_y = src->data[plane_y] +  y       * src->linesize[plane_y];
-        const uint8_t *src_u = src->data[plane_u] + (y >> 1) * src->linesize[plane_u];
-        const uint8_t *src_v = src->data[plane_v] + (y >> 1) * src->linesize[plane_v];
-        const uint8_t *src_a = src->data[plane_a] +  y       * src->linesize[plane_a];
+        uint8_t *dest = dst->data[0] + (pos_y + y) * dst->linesize[0] + pos_x * 4;
+        uint8_t *src_y = src->data[plane_y] +  y       * src->linesize[plane_y];
+        uint8_t *src_u = src->data[plane_u] + (y >> 1) * src->linesize[plane_u];
+        uint8_t *src_v = src->data[plane_v] + (y >> 1) * src->linesize[plane_v];
+        uint8_t *src_a = src->data[plane_a] +  y       * src->linesize[plane_a];
 
         for (int x = 0; x < src->width; x++) {
             int dst_alpha = dest[0];
