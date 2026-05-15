@@ -206,15 +206,33 @@ def edit(path, marker, find, replacement, where='after'):
 did = []
 
 # libavcodec/codec_id.h — add AV_CODEC_ID_WEBP_ANIM at the END of the video
-# section, just before AV_CODEC_ID_FIRST_AUDIO. Inserting mid-enum (e.g.
-# right after AV_CODEC_ID_WEBP) shifts every subsequent codec ID up by 1,
-# which breaks the static_assert in libavcodec/version.c that pins specific
-# IDs (AV_CODEC_ID_PRORES_RAW == 274, etc.) to fixed numeric values.
-if edit('libavcodec/codec_id.h',
-        marker='AV_CODEC_ID_WEBP_ANIM',
-        find='    AV_CODEC_ID_FIRST_AUDIO = 0x10000,\n',
-        replacement='    AV_CODEC_ID_WEBP_ANIM,\n',
-        where='before'):
+# section, immediately before the blank line + PCM-comment block that
+# precedes AV_CODEC_ID_FIRST_AUDIO. Matches Ramiro's placement in PR #22975.
+#
+# Inserting mid-enum (e.g. right after AV_CODEC_ID_WEBP) shifts every
+# subsequent codec ID up by 1, breaking the static_assert in
+# libavcodec/version.c that pins specific IDs (AV_CODEC_ID_PRORES_RAW == 274)
+# to fixed numeric values.
+codec_id_path = os.path.join(ff, 'libavcodec/codec_id.h')
+with open(codec_id_path) as f:
+    codec_id_text = f.read()
+if 'AV_CODEC_ID_WEBP_ANIM' in codec_id_text:
+    pass  # already present
+else:
+    # Anchor on the blank line + PCM-section comment that precedes FIRST_AUDIO.
+    # This is more stable than naming the last-video codec, which changes
+    # between ffmpeg versions.
+    pcm_anchor = '\n\n    /* various PCM "codecs" */'
+    if pcm_anchor not in codec_id_text:
+        sys.stderr.write("ERROR: codec_id.h — PCM-section anchor not found\n")
+        sys.exit(16)
+    codec_id_text = codec_id_text.replace(
+        pcm_anchor,
+        '\n    AV_CODEC_ID_WEBP_ANIM,' + pcm_anchor,
+        1,
+    )
+    with open(codec_id_path, 'w') as f:
+        f.write(codec_id_text)
     did.append('codec_id.h: AV_CODEC_ID_WEBP_ANIM (end of video section)')
 
 # libavcodec/codec_desc.c — add descriptor entry. Anchor on the closing `},` of
