@@ -71,7 +71,7 @@ EXTRA_LDFLAGS="-Wl,-z,max-page-size=16384 -Wl,--gc-sections $DEP_LD_FLAGS"
   --disable-decoders \
   --enable-decoder=h264,hevc,vp8,vp9,av1,mpeg4,mjpeg,aac,aac_latm,mp3,opus,vorbis,flac,ac3,eac3,pcm_s16le,pcm_s16be,pcm_u8,gif,png,webp,webp_anim,bmp,tiff,apng \
   --disable-demuxers \
-  --enable-demuxer=mov,matroska,hls,dash,mpegts,flv,webm_dash_manifest,aac,mp3,ogg,flac,wav,m4v,image2,webp_pipe,webp_anim,heif,ico,apng,gif \
+  --enable-demuxer=mov,matroska,hls,dash,mpegts,flv,webm_dash_manifest,aac,mp3,ogg,flac,wav,m4v,image2,webp_pipe,webp_anim,jpeg_pipe,png_pipe,bmp_pipe,gif_pipe,tiff_pipe,jpegls_pipe,jpegxl_pipe,heif,ico,apng,gif \
   --disable-muxers \
   --enable-muxer=mp4,mov,ipod,matroska,webm,mpegts,adts,gif,mp3,ogg,flac,wav \
   --disable-parsers \
