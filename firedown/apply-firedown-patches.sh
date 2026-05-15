@@ -205,12 +205,17 @@ def edit(path, marker, find, replacement, where='after'):
 
 did = []
 
-# libavcodec/codec_id.h — add AV_CODEC_ID_WEBP_ANIM after AV_CODEC_ID_WEBP
+# libavcodec/codec_id.h — add AV_CODEC_ID_WEBP_ANIM at the END of the video
+# section, just before AV_CODEC_ID_FIRST_AUDIO. Inserting mid-enum (e.g.
+# right after AV_CODEC_ID_WEBP) shifts every subsequent codec ID up by 1,
+# which breaks the static_assert in libavcodec/version.c that pins specific
+# IDs (AV_CODEC_ID_PRORES_RAW == 274, etc.) to fixed numeric values.
 if edit('libavcodec/codec_id.h',
         marker='AV_CODEC_ID_WEBP_ANIM',
-        find='    AV_CODEC_ID_WEBP,\n',
-        replacement='    AV_CODEC_ID_WEBP_ANIM,\n'):
-    did.append('codec_id.h: AV_CODEC_ID_WEBP_ANIM')
+        find='    AV_CODEC_ID_FIRST_AUDIO = 0x10000,\n',
+        replacement='    AV_CODEC_ID_WEBP_ANIM,\n',
+        where='before'):
+    did.append('codec_id.h: AV_CODEC_ID_WEBP_ANIM (end of video section)')
 
 # libavcodec/codec_desc.c — add descriptor entry. Anchor on the closing `},` of
 # the existing AV_CODEC_ID_WEBP descriptor block.
