@@ -235,25 +235,25 @@ else:
         f.write(codec_id_text)
     did.append('codec_id.h: AV_CODEC_ID_WEBP_ANIM (end of video section)')
 
-# libavcodec/codec_desc.c — add descriptor entry. Anchor on the closing `},` of
-# the existing AV_CODEC_ID_WEBP descriptor block.
-desc_anchor = '''        .id        = AV_CODEC_ID_WEBP,'''
+# libavcodec/codec_desc.c — add descriptor entry at the END of the video
+# section. CRITICAL: the codec_descriptors[] array is binary-searched by
+# avcodec_descriptor_get() (bsearch on .id), so the array MUST stay sorted
+# by codec ID. Our codec_id.h patch places AV_CODEC_ID_WEBP_ANIM at the
+# end of the video enum block (highest video ID), so the matching
+# descriptor entry must be the last video entry, right before the
+# "/* various PCM "codecs" */" delimiter. Inserting it after the WEBP
+# descriptor breaks the sort order, causes bsearch to return NULL, and
+# crashes ff_decode_preinit on `avctx->codec_descriptor->props`.
 desc_path = os.path.join(ff, 'libavcodec/codec_desc.c')
 with open(desc_path) as f:
     desc_text = f.read()
 if 'AV_CODEC_ID_WEBP_ANIM' in desc_text:
     pass  # descriptor entry already present
 else:
-    idx = desc_text.find(desc_anchor)
-    if idx < 0:
-        sys.stderr.write("ERROR: codec_desc.c — AV_CODEC_ID_WEBP descriptor not found\n")
+    pcm_anchor = '\n    /* various PCM "codecs" */\n'
+    if pcm_anchor not in desc_text:
+        sys.stderr.write("ERROR: codec_desc.c — PCM-section anchor not found\n")
         sys.exit(11)
-    # Find the end of this block: scan forward to the next "    },\n"
-    end = desc_text.find('\n    },\n', idx)
-    if end < 0:
-        sys.stderr.write("ERROR: codec_desc.c — end of WEBP descriptor block not found\n")
-        sys.exit(11)
-    end += len('\n    },\n')
     insertion = (
         '    {\n'
         '        .id        = AV_CODEC_ID_WEBP_ANIM,\n'
@@ -264,9 +264,10 @@ else:
         '        .mime_types= MT("image/webp"),\n'
         '    },\n'
     )
+    desc_text = desc_text.replace(pcm_anchor, '\n' + insertion + pcm_anchor, 1)
     with open(desc_path, 'w') as f:
-        f.write(desc_text[:end] + insertion + desc_text[end:])
-    did.append('codec_desc.c: webp_anim descriptor')
+        f.write(desc_text)
+    did.append('codec_desc.c: webp_anim descriptor (end of video section)')
 
 # libavcodec/allcodecs.c — extern declaration for ff_webp_anim_decoder.
 # IMPORTANT: do NOT add a trailing /* ... */ comment to the extern line.
