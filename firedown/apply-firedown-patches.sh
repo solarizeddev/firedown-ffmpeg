@@ -254,15 +254,19 @@ if edit('libavcodec/allcodecs.c',
     did.append('allcodecs.c: ff_webp_anim_decoder extern')
 
 # libavformat/allformats.c — extern declaration for ff_webp_anim_demuxer.
-# Anchor on the webp_pipe demuxer extern (the still WebP).
+# Anchor on the still-WebP demuxer extern. In ffmpeg 8.x the *_pipe image
+# demuxers are namespaced with `image_` at the C-symbol level (the configure
+# flag is still just `webp_pipe`), so the symbol is ff_image_webp_pipe_demuxer.
+# Try both spellings to remain compatible with older trees.
 allf_path = os.path.join(ff, 'libavformat/allformats.c')
 with open(allf_path) as f:
     allf_text = f.read()
 if 'ff_webp_anim_demuxer' in allf_text:
     pass
 else:
-    # Try a couple of plausible existing-declaration forms.
     for anchor in (
+        'extern const FFInputFormat  ff_image_webp_pipe_demuxer;\n',
+        'extern const FFInputFormat ff_image_webp_pipe_demuxer;\n',
         'extern const FFInputFormat  ff_webp_pipe_demuxer;\n',
         'extern const FFInputFormat ff_webp_pipe_demuxer;\n',
     ):
@@ -277,7 +281,7 @@ else:
             did.append('allformats.c: ff_webp_anim_demuxer extern')
             break
     else:
-        sys.stderr.write("ERROR: allformats.c — ff_webp_pipe_demuxer extern not found\n")
+        sys.stderr.write("ERROR: allformats.c — webp_pipe demuxer extern not found\n")
         sys.exit(12)
 
 # libavcodec/Makefile — link webp.o when WEBP_ANIM_DECODER enabled.
