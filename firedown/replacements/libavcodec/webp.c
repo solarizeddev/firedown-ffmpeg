@@ -2257,7 +2257,7 @@ const FFCodec ff_webp_anim_decoder = {
     .init           = webp_anim_decode_init,
     FF_CODEC_DECODE_CB(webp_anim_decode_frame),
     .close          = webp_anim_decode_close,
-    .p.capabilities = AV_CODEC_CAP_DR1 | AV_CODEC_CAP_SLICE_THREADS,
+    .p.capabilities = AV_CODEC_CAP_DR1,
     .caps_internal  = FF_CODEC_CAP_USES_PROGRESSFRAMES,
 };
 #endif /* CONFIG_WEBP_ANIM_DECODER */
