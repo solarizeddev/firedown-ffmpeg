@@ -418,3 +418,56 @@ if not did:
 PYEOF
 
 echo "[firedown] Done."
+
+# ----------------------------------------------------------------------
+# Step 5: hls.c recheck_discard_flags — diagnostic logging (dev only)
+# ----------------------------------------------------------------------
+# Inserts an AV_LOG_INFO trace inside the per-playlist loop of
+# recheck_discard_flags() so we can see why playlists toggle their
+# `needed` flag at runtime. Anchor-matched against a stable two-line
+# pattern; idempotent via a FIREDOWN-HLS-RECHECK-LOG marker.
+
+echo "[firedown] Injecting recheck_discard_flags diagnostic log..."
+
+python3 - "$FFMPEG_DIR/libavformat/hls.c" <<'PYEOF'
+import sys
+
+path = sys.argv[1]
+with open(path) as f:
+    text = f.read()
+
+if 'FIREDOWN-HLS-RECHECK-LOG' in text:
+    print('[firedown]   recheck_discard_flags log already injected')
+    sys.exit(0)
+
+anchor = (
+    '        struct playlist *pls = c->playlists[i];\n'
+    '        cur_needed = playlist_needed(c->playlists[i]);\n'
+)
+insertion = (
+    '        struct playlist *pls = c->playlists[i];\n'
+    '        int was_needed = pls->needed; /* FIREDOWN-HLS-RECHECK-LOG */\n'
+    '        cur_needed = playlist_needed(c->playlists[i]);\n'
+    '\n'
+    '        av_log(s, AV_LOG_INFO,\n'
+    '               "RECHECK pls[%d] url=%.80s was_needed=%d cur_needed=%d "\n'
+    '               "n_main_streams=%d broken=%d first=%d\\n",\n'
+    '               i, pls->url, was_needed, cur_needed, pls->n_main_streams,\n'
+    '               pls->broken, first);\n'
+)
+
+if anchor not in text:
+    sys.stderr.write(
+        "ERROR: hls.c — recheck_discard_flags anchor not found.\n"
+        "       The two-line block\n"
+        "         struct playlist *pls = c->playlists[i];\n"
+        "         cur_needed = playlist_needed(c->playlists[i]);\n"
+        "       did not match. Upstream may have reformatted; update the\n"
+        "       anchor in apply-firedown-patches.sh.\n")
+    sys.exit(20)
+
+with open(path, 'w') as f:
+    f.write(text.replace(anchor, insertion, 1))
+
+print('[firedown]   hls.c: recheck_discard_flags log inserted')
+PYEOF
