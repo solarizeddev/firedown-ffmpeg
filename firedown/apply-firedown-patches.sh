@@ -442,11 +442,13 @@ if 'FIREDOWN-HLS-RECHECK-LOG' in text:
 
 anchor = (
     '        struct playlist *pls = c->playlists[i];\n'
+    '\n'
     '        cur_needed = playlist_needed(c->playlists[i]);\n'
 )
 insertion = (
     '        struct playlist *pls = c->playlists[i];\n'
     '        int was_needed = pls->needed; /* FIREDOWN-HLS-RECHECK-LOG */\n'
+    '\n'
     '        cur_needed = playlist_needed(c->playlists[i]);\n'
     '\n'
     '        av_log(s, AV_LOG_INFO,\n'
@@ -459,8 +461,9 @@ insertion = (
 if anchor not in text:
     sys.stderr.write(
         "ERROR: hls.c — recheck_discard_flags anchor not found.\n"
-        "       The two-line block\n"
+        "       The block\n"
         "         struct playlist *pls = c->playlists[i];\n"
+        "         <blank line>\n"
         "         cur_needed = playlist_needed(c->playlists[i]);\n"
         "       did not match. Upstream may have reformatted; update the\n"
         "       anchor in apply-firedown-patches.sh.\n")
