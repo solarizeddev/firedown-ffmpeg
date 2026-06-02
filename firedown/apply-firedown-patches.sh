@@ -418,3 +418,82 @@ if not did:
 PYEOF
 
 echo "[firedown] Done."
+
+# ----------------------------------------------------------------------
+# Step 5: hls.c — gate audio-rendition probe on n_init_sections == 0
+# ----------------------------------------------------------------------
+# fMP4/CMAF audio renditions carry an EXT-X-MAP init section
+# (n_init_sections > 0); their codec params + timing already live in the
+# moov parsed by avformat_open_input() above, so the nested
+# find_stream_info(pls->ctx, NULL) is redundant and can drain ~100
+# encrypted segments (minutes) before returning.
+#
+# Use n_init_sections (set at playlist-PARSE time) rather than the
+# previously-tried cur_init_section (only non-NULL after the IO backend
+# has actually read an init segment, which differs under okhttp vs
+# stock file/http IO).
+#
+# Also emit a FIREDOWN_V4 trace line right before the gated condition
+# so we can verify the patched code path is being reached and inspect
+# the values being evaluated.
+#
+# Idempotency token: the literal string "FIREDOWN_V4 seg0=" from the
+# trace log.
+
+echo "[firedown] Gating hls.c audio-rendition probe on n_init_sections..."
+
+python3 - "$FFMPEG_DIR/libavformat/hls.c" <<'PYEOF'
+import sys
+
+path = sys.argv[1]
+with open(path) as f:
+    text = f.read()
+
+if 'FIREDOWN_V4 seg0=' in text:
+    print('[firedown]   hls.c audio-rendition gate already applied')
+    sys.exit(0)
+
+anchor = (
+    '         * on us if they want to.\n'
+    '         */\n'
+    '        if (pls->is_id3_timestamped || (pls->n_renditions > 0 && pls->renditions[0]->type == AVMEDIA_TYPE_AUDIO)) {\n'
+)
+insertion = (
+    '         * on us if they want to.\n'
+    '         */\n'
+    '        /* fMP4/CMAF audio renditions carry an EXT-X-MAP init section\n'
+    '         * (n_init_sections > 0); their codec params + timing already live in\n'
+    '         * the moov parsed by avformat_open_input() above, so this nested probe\n'
+    '         * is redundant and can drain ~100 encrypted segments (minutes) before\n'
+    '         * returning. Only run it for genuinely header-less raw audio (no init\n'
+    '         * section). n_init_sections is set at playlist-PARSE time, so unlike\n'
+    '         * cur_init_section it does not depend on the IO backend having already\n'
+    '         * read an init segment (which differs under okhttp vs file/http IO). */\n'
+    '        av_log(s, AV_LOG_ERROR,\n'
+    '               "FIREDOWN_V4 seg0=%s n_rend=%d rend0=%d cur_init=%p n_init=%d probe=%d\\n",\n'
+    '               (pls->n_segments > 0 && pls->segments[0]) ? pls->segments[0]->url : "?",\n'
+    '               pls->n_renditions,\n'
+    '               pls->n_renditions > 0 ? pls->renditions[0]->type : -1,\n'
+    '               (void *)pls->cur_init_section, pls->n_init_sections,\n'
+    '               (pls->is_id3_timestamped ||\n'
+    '                (pls->n_renditions > 0 && pls->renditions[0]->type == AVMEDIA_TYPE_AUDIO &&\n'
+    '                 pls->n_init_sections == 0)));\n'
+    '        if (pls->is_id3_timestamped ||\n'
+    '            (pls->n_renditions > 0 && pls->renditions[0]->type == AVMEDIA_TYPE_AUDIO &&\n'
+    '             pls->n_init_sections == 0)) {\n'
+)
+
+if anchor not in text:
+    sys.stderr.write(
+        "ERROR: hls.c — audio-rendition condition anchor not found.\n"
+        "       Expected:\n"
+        "           * on us if they want to.\n"
+        "           */\n"
+        "          if (pls->is_id3_timestamped || (pls->n_renditions > 0 && pls->renditions[0]->type == AVMEDIA_TYPE_AUDIO)) {\n"
+        "       Update the anchor in apply-firedown-patches.sh.\n")
+    sys.exit(25)
+
+with open(path, 'w') as f:
+    f.write(text.replace(anchor, insertion, 1))
+print('[firedown]   hls.c: audio-rendition probe gated on n_init_sections + FIREDOWN_V4 trace')
+PYEOF
