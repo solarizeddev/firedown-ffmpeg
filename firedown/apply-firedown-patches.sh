@@ -418,3 +418,95 @@ if not did:
 PYEOF
 
 echo "[firedown] Done."
+
+# ----------------------------------------------------------------------
+# Step 5: mov.c trace + hls.c IGNIDX flag (dev diagnostic)
+# ----------------------------------------------------------------------
+# Two paired edits investigating why mov demuxer's read_header walks
+# every moof/mdat to EOF on fragmented HLS audio renditions:
+#
+#   (a) mov.c — log every atom parse() return so we can see what mov is
+#       doing and why its read_header early-out doesn't fire.
+#
+#   (b) hls.c — set AVFMT_FLAG_IGNIDX on the nested pls->ctx. With this
+#       flag the mov demuxer skips building the fragment index during
+#       read_header, which is what triggers the moof/mdat walk to EOF
+#       on fragmented streams. We're keeping fragmented playback
+#       working via the outer caller's existing seek behaviour.
+#
+# Idempotency tokens: the unique FIREDOWN-MOV format string in mov.c
+# and the FIREDOWN comment marker in hls.c.
+
+echo "[firedown] Injecting mov.c trace + hls.c IGNIDX flag..."
+
+python3 - "$FFMPEG_DIR" <<'PYEOF'
+import os, sys
+
+ff = sys.argv[1]
+did = []
+
+# (a) mov.c — trace
+mov_path = os.path.join(ff, 'libavformat/mov.c')
+with open(mov_path) as f:
+    mov = f.read()
+if 'FIREDOWN-MOV atom=' in mov:
+    pass
+else:
+    mov_anchor = (
+        '            int err = parse(c, pb, a);\n'
+        '            if (err < 0) {\n'
+        '                c->atom_depth --;\n'
+        '                return err;\n'
+        '            }\n'
+    )
+    if mov_anchor not in mov:
+        sys.stderr.write(
+            "ERROR: mov.c — parse()/atom_depth anchor not found.\n"
+            "       Expected the block:\n"
+            "                       int err = parse(c, pb, a);\n"
+            "                       if (err < 0) {\n"
+            "                           c->atom_depth --;\n"
+            "                           return err;\n"
+            "                       }\n"
+            "       Update the anchor in apply-firedown-patches.sh.\n")
+        sys.exit(26)
+    mov_insertion = mov_anchor + (
+        '            av_log(c->fc, AV_LOG_ERROR,\n'
+        '                "FIREDOWN-MOV atom=%s depth=%d moov=%d mdat=%d seekable=%d frag_complete=%d ignidx=%d\\n",\n'
+        '                av_fourcc2str(a.type), c->atom_depth, c->found_moov, c->found_mdat,\n'
+        '                !!(pb->seekable & AVIO_SEEKABLE_NORMAL), c->frag_index.complete,\n'
+        '                !!(c->fc->flags & AVFMT_FLAG_IGNIDX));\n'
+    )
+    with open(mov_path, 'w') as f:
+        f.write(mov.replace(mov_anchor, mov_insertion, 1))
+    did.append('mov.c: per-atom parse() trace')
+
+# (b) hls.c — AVFMT_FLAG_IGNIDX on nested ctx
+hls_path = os.path.join(ff, 'libavformat/hls.c')
+with open(hls_path) as f:
+    hls = f.read()
+if "FIREDOWN: don't walk every moof/mdat" in hls:
+    pass
+else:
+    hls_anchor = '        pls->ctx->flags   |= s->flags & ~AVFMT_FLAG_CUSTOM_IO;\n'
+    if hls_anchor not in hls:
+        sys.stderr.write(
+            "ERROR: hls.c — pls->ctx->flags anchor not found.\n"
+            "       Expected:\n"
+            "          pls->ctx->flags   |= s->flags & ~AVFMT_FLAG_CUSTOM_IO;\n"
+            "       Update the anchor in apply-firedown-patches.sh.\n")
+        sys.exit(27)
+    hls_insertion = hls_anchor + (
+        "        pls->ctx->flags   |= AVFMT_FLAG_IGNIDX;   // FIREDOWN: don't walk every moof/mdat to\n"
+        "                                                  // build a seekable fragment index during\n"
+        "                                                  // read_header (downloads the whole track).\n"
+    )
+    with open(hls_path, 'w') as f:
+        f.write(hls.replace(hls_anchor, hls_insertion, 1))
+    did.append('hls.c: AVFMT_FLAG_IGNIDX on nested ctx')
+
+for line in did:
+    print(f'[firedown]   {line}')
+if not did:
+    print('[firedown]   mov.c + hls.c diagnostics already applied')
+PYEOF
