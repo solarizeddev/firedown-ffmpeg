@@ -418,3 +418,74 @@ if not did:
 PYEOF
 
 echo "[firedown] Done."
+
+# ----------------------------------------------------------------------
+# Step 5: hls.c — narrow the audio-rendition find_stream_info branch
+# ----------------------------------------------------------------------
+# The original condition in hls_read_header enters the
+# avformat_find_stream_info(pls->ctx, NULL) branch for any audio
+# rendition (n_renditions > 0 && AUDIO). On encrypted CMAF audio that
+# probes ~100 segments per rendition before returning, because the
+# default probesize / max_analyze_duration are 5 MB / 5 s and CMAF
+# audio segments are tiny (~50 KB / ~1 s).
+#
+# fMP4/CMAF audio doesn't need that probe at all — codec params and
+# timing live in the moov box that avformat_open_input has already
+# parsed, and the outer find_stream_info our caller runs covers the
+# rest. So gate the audio-rendition branch on a non-mov container,
+# preserving the original behaviour for raw AAC / MPEG-TS / etc.
+# (where the "raw audio" rationale in the comment actually applies).
+#
+# Idempotency token: the comment block contains `[firedown]`, which
+# the existing hls.c never has — a re-run on a patched tree skips.
+
+echo "[firedown] Narrowing hls.c audio-rendition find_stream_info branch..."
+
+python3 - "$FFMPEG_DIR/libavformat/hls.c" <<'PYEOF'
+import sys
+
+path = sys.argv[1]
+with open(path) as f:
+    text = f.read()
+
+if '[firedown] The original condition' in text:
+    print('[firedown]   hls.c audio-rendition narrow already applied')
+    sys.exit(0)
+
+anchor = (
+    '         * on us if they want to.\n'
+    '         */\n'
+    '        if (pls->is_id3_timestamped || (pls->n_renditions > 0 && pls->renditions[0]->type == AVMEDIA_TYPE_AUDIO)) {\n'
+)
+insertion = (
+    '         * on us if they want to.\n'
+    '         *\n'
+    '         * [firedown] The original condition also enters this branch for any\n'
+    '         * audio rendition (n_renditions > 0 && AUDIO), which on fMP4/CMAF audio\n'
+    '         * triggers a full per-rendition probe that under defaults of 5 MB / 5 s\n'
+    '         * burns 80+ encrypted segments per rendition before find_stream_info\n'
+    '         * returns. fMP4 audio doesn\'t need it: codec params + timing come from\n'
+    '         * the moov box parsed in avformat_open_input above, and the outer\n'
+    '         * find_stream_info our caller runs covers the rest. Restrict the audio-\n'
+    '         * rendition branch to non-mov containers (raw AAC, MPEG-TS, etc., where\n'
+    '         * the comment\'s "raw audio" rationale actually applies).\n'
+    '         */\n'
+    '        if (pls->is_id3_timestamped ||\n'
+    '            (pls->n_renditions > 0 && pls->renditions[0]->type == AVMEDIA_TYPE_AUDIO &&\n'
+    '             pls->ctx->iformat && !strstr(pls->ctx->iformat->name, "mov"))) {\n'
+)
+
+if anchor not in text:
+    sys.stderr.write(
+        "ERROR: hls.c — audio-rendition condition anchor not found.\n"
+        "       Expected:\n"
+        "           * on us if they want to.\n"
+        "           */\n"
+        "          if (pls->is_id3_timestamped || (pls->n_renditions > 0 && pls->renditions[0]->type == AVMEDIA_TYPE_AUDIO)) {\n"
+        "       Update the anchor in apply-firedown-patches.sh.\n")
+    sys.exit(22)
+
+with open(path, 'w') as f:
+    f.write(text.replace(anchor, insertion, 1))
+print('[firedown]   hls.c: audio-rendition branch narrowed to non-mov')
+PYEOF
