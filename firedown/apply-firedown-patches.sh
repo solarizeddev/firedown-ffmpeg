@@ -474,3 +474,58 @@ with open(path, 'w') as f:
 
 print('[firedown]   hls.c: recheck_discard_flags log inserted')
 PYEOF
+
+# ----------------------------------------------------------------------
+# Step 6: hls.c — bound the nested per-playlist probe (dev only)
+# ----------------------------------------------------------------------
+# The existing pls->ctx->probesize/max_analyze_duration assignment at the
+# probe-input-buffer site (around line 2322) is reset by avformat_open_input,
+# so the nested avformat_find_stream_info call further down runs with the
+# default 5 MB / 5 s caps. On encrypted CMAF audio renditions that means
+# 80+ segments get pulled hunting for codec params. Re-set the caps right
+# before that find_stream_info call.
+
+echo "[firedown] Injecting hls.c nested-probe caps..."
+
+python3 - "$FFMPEG_DIR/libavformat/hls.c" <<'PYEOF'
+import sys
+
+path = sys.argv[1]
+with open(path) as f:
+    text = f.read()
+
+if 'FIREDOWN-HLS-NESTED-PROBE' in text:
+    print('[firedown]   hls.c nested-probe caps already injected')
+    sys.exit(0)
+
+anchor = '        if (pls->is_id3_timestamped || (pls->n_renditions > 0 && pls->renditions[0]->type == AVMEDIA_TYPE_AUDIO)) {\n'
+insertion = (
+    '\n'
+    '        /* FIREDOWN-HLS-NESTED-PROBE: Bound the nested per-playlist probe.\n'
+    '         * Otherwise the audio-rendition path below (avformat_find_stream_info\n'
+    '         * on pls->ctx for renditions whose first attached rendition is\n'
+    '         * AVMEDIA_TYPE_AUDIO) uses the default 5 MB / 5 s caps, which on an\n'
+    '         * encrypted CMAF rendition can read 80+ segments hunting for codec\n'
+    '         * params before giving up — and starves the rest of the master\n'
+    '         * parse. Caller-set caps on `s` don\'t reach this nested ctx; copy\n'
+    '         * them explicitly. */\n'
+    '        pls->ctx->probesize           = s->probesize           ? s->probesize           : 1024 * 1024;\n'
+    '        pls->ctx->max_analyze_duration = s->max_analyze_duration ? s->max_analyze_duration : 1 * AV_TIME_BASE;\n'
+    '\n'
+    + anchor
+)
+
+if anchor not in text:
+    sys.stderr.write(
+        "ERROR: hls.c — nested-probe anchor not found.\n"
+        "       Looking for the line:\n"
+        "         if (pls->is_id3_timestamped || (pls->n_renditions > 0 && pls->renditions[0]->type == AVMEDIA_TYPE_AUDIO)) {\n"
+        "       Upstream may have reformatted; update the anchor in\n"
+        "       apply-firedown-patches.sh.\n")
+    sys.exit(21)
+
+with open(path, 'w') as f:
+    f.write(text.replace(anchor, insertion, 1))
+
+print('[firedown]   hls.c: nested-probe caps inserted')
+PYEOF
