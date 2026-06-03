@@ -69,9 +69,9 @@ EXTRA_LDFLAGS="-Wl,-z,max-page-size=16384 -Wl,--gc-sections $DEP_LD_FLAGS"
   --enable-encoder=aac \
   --enable-encoder=gif \
   --disable-decoders \
-  --enable-decoder=h264,hevc,vp8,vp9,av1,mpeg4,mjpeg,aac,aac_latm,mp3,opus,vorbis,flac,ac3,eac3,pcm_s16le,pcm_s16be,pcm_u8,gif,png,webp,bmp,tiff,apng \
+  --enable-decoder=h264,hevc,vp8,vp9,av1,libdav1d,mpeg4,mjpeg,aac,aac_latm,mp3,opus,vorbis,flac,ac3,eac3,pcm_s16le,pcm_s16be,pcm_u8,gif,png,webp,webp_anim,bmp,tiff,apng \
   --disable-demuxers \
-  --enable-demuxer=mov,matroska,hls,dash,mpegts,flv,webm_dash_manifest,aac,mp3,ogg,flac,wav,m4v,image2,webp_pipe,heif,ico,apng,gif \
+  --enable-demuxer=mov,matroska,hls,dash,mpegts,flv,live_flv,avi,asf,asf_o,mpegps,webvtt,webm_dash_manifest,aac,mp3,ogg,flac,wav,m4v,image2,image2pipe,image_bmp_pipe,image_cri_pipe,image_dds_pipe,image_dpx_pipe,image_exr_pipe,image_gem_pipe,image_gif_pipe,image_hdr_pipe,image_j2k_pipe,image_jpeg_pipe,image_jpegls_pipe,image_jpegxl_pipe,image_jpegxs_pipe,image_pam_pipe,image_pbm_pipe,image_pcx_pipe,image_pfm_pipe,image_pgmyuv_pipe,image_pgm_pipe,image_pgx_pipe,image_phm_pipe,image_photocd_pipe,image_pictor_pipe,image_png_pipe,image_ppm_pipe,image_psd_pipe,image_qdraw_pipe,image_qoi_pipe,image_sgi_pipe,image_svg_pipe,image_sunrast_pipe,image_tiff_pipe,image_vbn_pipe,image_webp_pipe,image_xbm_pipe,image_xpm_pipe,image_xwd_pipe,webp_anim,heif,ico,apng,gif \
   --disable-muxers \
   --enable-muxer=mp4,mov,ipod,matroska,webm,mpegts,adts,gif,mp3,ogg,flac,wav \
   --disable-parsers \
