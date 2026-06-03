@@ -140,9 +140,8 @@ new_read_key = r'''/* FIREDOWN-HLS-KEYCACHE: process-global cache of fetched HLS
  * download (one real fetch, reused) and different across sessions (each fresh
  * session fetches its own key #1). That keying is correct whether the content
  * key is static-per-content or minted-per-session — we never serve one
- * session's bytes to another, and a successful fetch overwrites any prior
- * entry for the same URL, so a re-minted session URL transparently replaces a
- * stale one.
+ * session's bytes to another; a re-minted session always produces a
+ * *different* URL, so it simply gets its own cache entry.
  *
  * Scope is deliberately tiny: one key URL per playlist per session, so a
  * handful of entries with FIFO eviction is plenty. Guarded by a static mutex
@@ -183,45 +182,40 @@ static int hls_key_cache_get(const char *url, uint8_t *out)
     return found;
 }
 
-/* Store (or overwrite) the 16 key bytes for `url`. Best-effort: on an
+/* Store the 16 key bytes for `url`. First-writer-wins: best-effort, and on an
  * allocation failure the entry is simply not cached. */
 static void hls_key_cache_put(const char *url, const uint8_t *key)
 {
-    int slot = -1;
+    int slot;
     int i;
 
     ff_mutex_lock(&hls_key_cache_mutex);
 
-    /* Reuse an existing entry for the same URL if there is one. */
+    /* First-writer-wins: if this URL is already cached, keep the existing
+     * bytes. read_key() does get()->fetch->put() with the lock released across
+     * the fetch, so two threads can both miss and both fetch the same URL; the
+     * FIRST fetch of a single-use key URL is the real one, so a later (racing)
+     * fetch that returns a decoy must not clobber it. A re-minted session
+     * always yields a *different* URL, so there is never a legitimate need to
+     * overwrite an entry in place. */
     for (i = 0; i < hls_key_cache_count; i++) {
-        if (hls_key_cache[i].url == NULL) {
-            continue;
-        }
-        if (strcmp(hls_key_cache[i].url, url) == 0) {
-            slot = i;
-            break;
+        if (hls_key_cache[i].url != NULL && strcmp(hls_key_cache[i].url, url) == 0) {
+            ff_mutex_unlock(&hls_key_cache_mutex);
+            return;
         }
     }
 
-    if (slot < 0 && hls_key_cache_count < HLS_KEY_CACHE_MAX) {
+    if (hls_key_cache_count < HLS_KEY_CACHE_MAX) {
         slot = hls_key_cache_count;
         hls_key_cache_count++;
-    }
-
-    if (slot < 0) {
+    } else {
         /* Table full: evict the oldest entry (FIFO). */
         slot = hls_key_cache_next;
         hls_key_cache_next = (hls_key_cache_next + 1) % HLS_KEY_CACHE_MAX;
         av_freep(&hls_key_cache[slot].url);
     }
 
-    if (hls_key_cache[slot].url != NULL && strcmp(hls_key_cache[slot].url, url) != 0) {
-        av_freep(&hls_key_cache[slot].url);
-    }
-    if (hls_key_cache[slot].url == NULL) {
-        hls_key_cache[slot].url = av_strdup(url);
-    }
-
+    hls_key_cache[slot].url = av_strdup(url);
     if (hls_key_cache[slot].url != NULL) {
         memcpy(hls_key_cache[slot].key, key, 16);
     }
