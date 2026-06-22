@@ -7,8 +7,8 @@ own `CLAUDE.md` has the media-capture and download-flow context.
 
 ## What this repo does
 
-`ffmpeg-android-maker.sh` downloads vanilla FFmpeg (pinned to **8.1.1** via
-`scripts/parse-arguments.sh` → `SOURCE_VALUE=8.1.1`, `TAR`) and, **after**
+`ffmpeg-android-maker.sh` downloads vanilla FFmpeg (pinned to **8.1.2** via
+`scripts/parse-arguments.sh` → `SOURCE_VALUE=8.1.2`, `TAR`) and, **after**
 download / **before** per-ABI builds, applies Firedown's modifications via
 `firedown/apply-firedown-patches.sh` (wired in by the hook in
 `ffmpeg-android-maker.sh`). Output `.so`s are synced into the app with the app
