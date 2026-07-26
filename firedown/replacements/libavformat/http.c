@@ -303,6 +303,39 @@ done:
     if (headers)
         (*env)->DeleteLocalRef(env, headers);
 
+    /* [OOM FIX — issue #300] On failure, release everything okhttp_close would.
+     *
+     * ffmpeg calls url_close (okhttp_close) ONLY for a URLContext that connected
+     * successfully: ffurl_closep() gates the close on h->is_connected, which
+     * ffurl_connect() sets to 1 only AFTER url_open2 returns 0. When okhttp_open
+     * returns an error, ffmpeg just av_freep()s priv_data — okhttp_close never
+     * runs — so any JNI global ref created above leaks for the whole process:
+     *   - c->thiz pins the FFmpegOkhttp Java object (holding its mUrl/mHeaders
+     *     strings — headers can be several KB of cookies), a Java-heap leak;
+     *   - the jfields class refs leak entries in the JNI global-ref table.
+     * HLS/DASH opens a fresh http URLContext per segment / key / playlist and a
+     * meaningful fraction of opens fail (403/404/EOF, cancelled capture probes,
+     * live-edge reload storms), so these accumulate until the Java heap is
+     * exhausted — the OOM this fixes (victim on an OkHttp TaskRunner thread,
+     * heap 254/256 MB). Do the close-equivalent cleanup here, gated on failure
+     * so a successful open leaves thiz/jfields intact for read/seek/close. */
+    if (ret < 0) {
+        if (c->thiz) {
+            /* Release the socket deterministically for the rare path where the
+             * Java open succeeded but a later JNI step here failed (the object
+             * still holds a live Response); harmless when Java okhttpOpen
+             * already closed itself on its own error return. Any pending
+             * exception was cleared by ff_jni_exception_check above, so these
+             * JNI calls are safe. */
+            (*env)->CallVoidMethod(env, c->thiz, c->jfields.okhttp_close_method);
+            ff_jni_exception_check(env, 1, h);
+            (*env)->DeleteGlobalRef(env, c->thiz);
+            c->thiz = NULL;
+        }
+        av_freep(&c->mime_type);
+        ff_jni_reset_jfields(env, &c->jfields, jfields_okhttp_mapping, 1, h);
+    }
+
     return ret;
 }
 
