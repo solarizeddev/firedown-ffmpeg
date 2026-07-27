@@ -34,6 +34,35 @@ is applied only if its marker is absent. **Per-site request quirks (headers a
 site needs) live in the app/parser emit, never in `http.c`** — the bridge is
 generic and host-agnostic.
 
+## JNI reference discipline in `http.c` (issue #300 OOM)
+
+`http.c` is the one place in this fork that holds JNI references, and HLS/DASH
+opens a fresh `URLContext` — hence a fresh `FFmpegOkhttp` object and a fresh set
+of jfields class refs — **per segment, key and playlist**. At that call rate any
+per-open leak is unbounded, so three rules hold:
+
+- **Every exit path releases.** ffmpeg calls `url_close` **only** for a context
+  that connected (`ffurl_closep()` gates on `h->is_connected`, set only after
+  `url_open2` returns 0), so `okhttp_open`'s **failure** path must do the
+  close-equivalent cleanup itself — that was issue #300, where each failed open
+  (403/404 segments, cancelled probes, live-edge reload storms) permanently
+  leaked the `FFmpegOkhttp` object with its `mUrl`/`mHeaders` (KBs of cookies)
+  plus 4 global refs, until the Java heap was gone. `okhttp_close` likewise
+  never bails early: no `env` means the *JNI* releases are impossible, not that
+  the native `mime_type` free should be skipped too.
+- **`log_ctx` is `h` or `c` — NEVER `c->thiz`.** `av_log` dereferences its first
+  argument as an `AVClass **` and calls `item_name` out of it; a `jobject` is an
+  opaque handle, so passing one reads a function pointer from arbitrary memory.
+  It only fires with a Java exception pending — and `okhttpSeek`/`okhttpGetMime`/
+  `okhttpClose` have **no** Java-side `catch`, so a heap-exhaustion
+  `OutOfMemoryError` lands there and turns a diagnosable Java OOM into a native
+  SIGSEGV. That masked #300's own signature.
+- **Local refs are NOT free here.** These calls arrive on long-lived *attached
+  native* download threads, never via a Java frame, so local refs accumulate
+  until ART's 512-entry table overflows and aborts. Delete every local ref on
+  every path, and **clear a pending exception before returning** — the next JNI
+  call made with one pending is a CheckJNI process abort.
+
 ## hls.c single-use AES-key cache (`patches/0004`) — the important one
 
 **Root cause it fixes (Niconico domand "endless probing / 720p hangs"):** the

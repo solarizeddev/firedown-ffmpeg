@@ -93,8 +93,28 @@ static jobject okhttp_get_options(OkhttpContext *c, JNIEnv *env, AVDictionary **
     jobject meta_map = (*env)->NewObject(env, c->jfields.hash_map_class, c->jfields.hash_map_init_method);
     AVDictionaryEntry *t = NULL;
 
-    if((*env)->ExceptionCheck(env) || !meta_map)
+    if ((*env)->ExceptionCheck(env) || !meta_map) {
+        /* Two things must happen before returning, and the old code did
+         * neither:
+         *
+         * 1. CLEAR the pending exception. The caller issues further JNI
+         *    calls immediately (CallIntMethod on okhttpOpen), and CheckJNI
+         *    aborts the whole process on any JNI call made with an exception
+         *    pending ("JNI CallIntMethod called with pending exception").
+         * 2. RELEASE the local ref when the object was in fact created (the
+         *    ExceptionCheck can be true with a non-NULL meta_map). These
+         *    calls arrive on long-lived attached native download threads,
+         *    where local refs are NOT reclaimed per call the way they are
+         *    when returning to a Java frame — they accumulate until ART's
+         *    local reference table (512 entries) overflows and aborts.
+         *
+         * ff_jni_exception_check does the clearing as well as the logging. */
+        ff_jni_exception_check(env, 1, c);
+        if (meta_map) {
+            (*env)->DeleteLocalRef(env, meta_map);
+        }
         return NULL;
+    }
 
     while ((t = av_dict_iterate(*options, t))) {
         jstring key = ff_jni_utf_chars_to_jstring(env, t->key, c);
@@ -129,32 +149,44 @@ static int okhttp_close(URLContext *h)
 
     av_log(h, AV_LOG_DEBUG, "okhttp_close\n");
 
-    if (!env || !c->thiz) {
-        av_log(h, AV_LOG_WARNING, "okhttp_close: no env or thiz\n");
-        return 0;
+    /* The early return this used to take on (!env || !c->thiz) skipped
+     * EVERYTHING below — the cached DirectByteBuffer global ref, the thiz
+     * global ref and the jfields class refs all leaked, plus the mime_type
+     * string. That is the same leak class as issue #300, just reached by a
+     * rarer door, so it gets the same treatment: release whatever is
+     * releasable rather than bailing wholesale.
+     *
+     * Only the JNI work genuinely needs an env; the native free never did. */
+    if (env) {
+        if (c->thiz) {
+            (*env)->CallVoidMethod(env, c->thiz, c->jfields.okhttp_close_method);
+            ff_jni_exception_check(env, 1, h);
+            (*env)->DeleteGlobalRef(env, c->thiz);
+        }
+
+        /* [OOM FIX] Free cached DirectByteBuffer */
+        if (c->cached_buf) {
+            (*env)->DeleteGlobalRef(env, c->cached_buf);
+            av_log(h, AV_LOG_TRACE, "okhttp_close: freed cached DirectByteBuffer\n");
+        }
+
+        ff_jni_reset_jfields(env, &c->jfields, jfields_okhttp_mapping, 1, h);
+    } else {
+        /* Nothing can be released without an env — the global refs are
+         * unreachable from here. Log it honestly rather than silently: a
+         * URLContext closing on a thread ff_jni_get_env could not attach is
+         * itself the anomaly worth seeing. */
+        av_log(h, AV_LOG_WARNING,
+               "okhttp_close: no JNIEnv — JNI global refs cannot be released\n");
     }
 
-    (*env)->CallVoidMethod(env, c->thiz, c->jfields.okhttp_close_method);
-    ff_jni_exception_check(env, 1, c->thiz);
+    c->thiz = NULL;
+    c->cached_buf = NULL;
+    c->cached_buf_ptr = NULL;
+    c->cached_buf_size = 0;
 
     // FIX #3: free mime_type string
     av_freep(&c->mime_type);
-
-    /* [OOM FIX] Free cached DirectByteBuffer */
-    if (c->cached_buf != NULL) {
-        (*env)->DeleteGlobalRef(env, c->cached_buf);
-        c->cached_buf = NULL;
-        c->cached_buf_ptr = NULL;
-        c->cached_buf_size = 0;
-        av_log(h, AV_LOG_TRACE, "okhttp_close: freed cached DirectByteBuffer\n");
-    }
-
-    if (c->thiz) {
-        (*env)->DeleteGlobalRef(env, c->thiz);
-        c->thiz = NULL;
-    }
-
-    ff_jni_reset_jfields(env, &c->jfields, jfields_okhttp_mapping, 1, c);
 
     av_log(h, AV_LOG_DEBUG, "okhttp_close finished\n");
     return 0;
@@ -174,7 +206,19 @@ static int64_t okhttp_seek(URLContext *h, int64_t off, int whence)
 
     int64_t result = (*env)->CallLongMethod(env, c->thiz, c->jfields.okhttp_seek_method, off, whence);
 
-    if (ff_jni_exception_check(env, 1, c->thiz) < 0) {
+    /* log_ctx must be a struct whose FIRST member is an AVClass* (av_log
+     * dereferences it as one) — h, or c. It must NEVER be c->thiz: a jobject
+     * is an opaque JNI handle, and av_log would read a class_name and an
+     * item_name FUNCTION POINTER out of whatever that indirection lands on.
+     *
+     * This matters most in exactly the situation it was hiding: the check
+     * only reaches av_log when a Java exception is pending, and okhttpSeek
+     * on the Java side has no try/catch at all, so a heap-exhaustion
+     * OutOfMemoryError arrives here as a pending exception. The app would
+     * then jump through a garbage function pointer — turning a diagnosable
+     * java.lang.OutOfMemoryError (issue #300) into a native SIGSEGV. Same
+     * fix applied in okhttp_read and okhttp_close. */
+    if (ff_jni_exception_check(env, 1, h) < 0) {
         av_log(h, AV_LOG_ERROR, "okhttp_seek: Java exception\n");
         return AVERROR_EXIT;
     }
@@ -408,7 +452,8 @@ static int okhttp_read(URLContext *h, unsigned char *buf, int size)
     /* On a pending exception (e.g. InterruptedException from Thread.interrupt
      * during cancel), return AVERROR_EXIT rather than EIO so the demuxer
      * unwinds cleanly instead of retrying into the same trap. */
-    if (ff_jni_exception_check(env, 1, c->thiz) < 0) {
+    /* h, never c->thiz — see the log_ctx note in okhttp_seek. */
+    if (ff_jni_exception_check(env, 1, h) < 0) {
         av_log(h, AV_LOG_ERROR, "okhttp_read: Java exception\n");
         return AVERROR_EXIT;
     }
