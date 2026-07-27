@@ -52,9 +52,38 @@ typedef struct {
     jobject thiz;
 
     /* [OOM FIX] Cached DirectByteBuffer — reused across okhttp_read calls
-     * instead of allocating a new one per call. For a given URLContext the
-     * buf pointer and size are constant (FFmpeg allocates the protocol buffer
-     * once), so the cached buffer is valid for the lifetime of the connection. */
+     * instead of allocating a new one per call.
+     *
+     * The original note here claimed "for a given URLContext the buf pointer
+     * and size are constant (FFmpeg allocates the protocol buffer once)".
+     * That is NOT true, and the difference is what makes the invalidation
+     * check below load-bearing rather than belt-and-braces. ffmpeg reaches
+     * url_read by two paths (libavformat/aviobuf.c, 8.1.2):
+     *
+     *  - BUFFERED (fill_buffer, ~line 514): reads into the AVIO buffer, at
+     *    most IO_BUFFER_SIZE (32768) bytes. dst is s->buffer in all but the
+     *    buffer-empty-at-offset-0 case, so the pointer IS effectively stable
+     *    here and the cache hits. This is the path the cache was written for.
+     *
+     *  - DIRECT (avio_read, ~line 623): when size > s->buffer_size — or with
+     *    AVIO_FLAG_DIRECT — ffmpeg BYPASSES its buffer and hands read_packet
+     *    the CALLER's buffer, then advances `buf += len` inside its own loop.
+     *    So the pointer differs per call and often per iteration. mov's
+     *    av_get_packet reads a whole packet this way and a video keyframe is
+     *    routinely over 32 KB, so this path is common, not exotic. Every one
+     *    of these reads is a cache MISS, costing a DeleteGlobalRef +
+     *    NewGlobalRef + DeleteLocalRef more than the uncached form. The cache
+     *    is still a net win overall — just not the unconditional one the old
+     *    comment implied.
+     *
+     * The DIRECT path also creates a use-after-free shape worth naming: the
+     * cached ref can outlive the allocation it wrapped (a packet buffer that
+     * has since been freed), and a later malloc can land on the SAME address
+     * with a SMALLER size while cached_buf_size still holds the old, larger
+     * capacity — so the entry is reused over a shorter allocation. That is
+     * safe for exactly one reason: FFmpegOkhttp.okhttpRead bounds its write
+     * by the `size` argument and NEVER by byteBuffer.capacity(). Do not
+     * "simplify" that on either side of the bridge. */
     jobject cached_buf;
     unsigned char *cached_buf_ptr;
     int cached_buf_size;
