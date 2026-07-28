@@ -35,6 +35,7 @@ struct JNIOkhttpFields {
     jmethodID okhttp_open_method;
     jmethodID okhttp_read_method;
     jmethodID okhttp_seek_method;
+    jmethodID okhttp_get_short_seek_method;
     jmethodID okhttp_close_method;
     jmethodID okhttp_get_mime_method;
     jclass hash_map_class;
@@ -96,6 +97,14 @@ static const struct FFJniField jfields_okhttp_mapping[] = {
     { "com/solarized/firedown/ffmpegutils/FFmpegOkhttp", "okhttpOpen", "(Ljava/util/Map;)I", FF_JNI_METHOD, OFFSET(okhttp_open_method), 1 },
     { "com/solarized/firedown/ffmpegutils/FFmpegOkhttp", "okhttpRead", "(Ljava/nio/ByteBuffer;I)I", FF_JNI_METHOD, OFFSET(okhttp_read_method), 1 },
     { "com/solarized/firedown/ffmpegutils/FFmpegOkhttp", "okhttpSeek", "(JI)J", FF_JNI_METHOD, OFFSET(okhttp_seek_method), 1 },
+    /* NOT mandatory (the trailing 0), unlike every other entry here — this one
+     * is a pure optimisation, so a missing method must degrade to ffmpeg's
+     * stock 32 KiB threshold rather than fail the open. ff_jni_init_jfields
+     * aborts the whole init on a missing MANDATORY method, which for a .so
+     * built from this tree and paired with an older FFmpegOkhttp.java would
+     * break every single HTTP open to gain nothing. Non-mandatory leaves the
+     * jmethodID NULL instead, which okhttp_get_short_seek checks for. */
+    { "com/solarized/firedown/ffmpegutils/FFmpegOkhttp", "okhttpGetShortSeek", "()I", FF_JNI_METHOD, OFFSET(okhttp_get_short_seek_method), 0 },
     { "com/solarized/firedown/ffmpegutils/FFmpegOkhttp", "okhttpClose", "()V", FF_JNI_METHOD, OFFSET(okhttp_close_method), 1 },
     { "com/solarized/firedown/ffmpegutils/FFmpegOkhttp", "okhttpGetMime", "()Ljava/lang/String;", FF_JNI_METHOD, OFFSET(okhttp_get_mime_method), 1 },
     { "java/util/HashMap", NULL, NULL, FF_JNI_CLASS, OFFSET(hash_map_class), 1 },
@@ -267,6 +276,60 @@ static int64_t okhttp_seek(URLContext *h, int64_t off, int whence)
     }
 
     av_log(h, AV_LOG_DEBUG, "okhttp_seek: result=%"PRId64"\n", result);
+    return result;
+}
+
+/* ffmpeg's short-seek hook — how far past its own buffer avio may satisfy a
+ * FORWARD seek by reading ahead rather than calling okhttp_seek.
+ *
+ * avio_seek (libavformat/aviobuf.c) folds the result in as:
+ *
+ *   short_seek = ctx->short_seek_threshold;              // 32 KiB default
+ *   if (ctx->short_seek_get)
+ *       short_seek = FFMAX(ctx->short_seek_get(...), short_seek);
+ *
+ * FFMAX is what makes every failure path here a one-liner: a negative return
+ * cannot lower the threshold, it is simply ignored, so AVERROR(ENOSYS) is the
+ * correct answer for "no env", "not open" and "Java said no" alike, and none
+ * of them can degrade behaviour below the stock default.
+ *
+ * The value itself is the Java side's own forward-discard budget (see
+ * FFmpegOkhttp.okhttpGetShortSeek), because the alternative to avio walking
+ * forward is performSeek walking forward and THROWING THE BYTES AWAY. Same
+ * bytes off the wire either way; only this path keeps them. */
+static int okhttp_get_short_seek(URLContext *h)
+{
+    OkhttpContext *c = h->priv_data;
+    JNIEnv *env;
+    int result;
+
+    /* The method is registered non-mandatory, so the id is NULL when the Java
+     * side predates it — calling through a NULL jmethodID is undefined, and
+     * this is the whole reason the non-mandatory registration is safe. */
+    if (!c->thiz || !c->jfields.okhttp_get_short_seek_method) {
+        return AVERROR(ENOSYS);
+    }
+
+    env = ff_jni_get_env(h);
+    if (!env) {
+        av_log(h, AV_LOG_DEBUG, "okhttp_get_short_seek: no JNIEnv\n");
+        return AVERROR(ENOSYS);
+    }
+
+    result = (*env)->CallIntMethod(env, c->thiz,
+                                   c->jfields.okhttp_get_short_seek_method);
+
+    /* h, never c->thiz — see the log_ctx note in okhttp_seek. */
+    if (ff_jni_exception_check(env, 1, h) < 0) {
+        av_log(h, AV_LOG_WARNING, "okhttp_get_short_seek: Java exception\n");
+        return AVERROR(ENOSYS);
+    }
+
+    if (result <= 0) {
+        return AVERROR(ENOSYS);
+    }
+
+    av_log(h, AV_LOG_TRACE, "okhttp_get_short_seek: %d\n", result);
     return result;
 }
 
@@ -521,6 +584,7 @@ const URLProtocol ff_http_protocol = {
     .url_read            = okhttp_read,
     .url_seek            = okhttp_seek,
     .url_close           = okhttp_close,
+    .url_get_short_seek  = okhttp_get_short_seek,
     .priv_data_size      = sizeof(OkhttpContext),
     .priv_data_class     = &http_context_class,
     .flags               = URL_PROTOCOL_FLAG_NETWORK,
@@ -536,6 +600,7 @@ const URLProtocol ff_https_protocol = {
     .url_read            = okhttp_read,
     .url_seek            = okhttp_seek,
     .url_close           = okhttp_close,
+    .url_get_short_seek  = okhttp_get_short_seek,
     .priv_data_size      = sizeof(OkhttpContext),
     .priv_data_class     = &https_context_class,
     .flags               = URL_PROTOCOL_FLAG_NETWORK,
