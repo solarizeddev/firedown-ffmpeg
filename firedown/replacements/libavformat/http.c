@@ -1,5 +1,6 @@
 #include <jni.h>
 #include <string.h>
+#include <inttypes.h> // PRId64 (FFmpeg 9.0 no longer pulls it in transitively)
 #include "libavcodec/ffjni.h"
 #include "libavcodec/jni.h"
 #include "libavutil/avstring.h"
