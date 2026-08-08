@@ -13,7 +13,7 @@ function ensureSourcesTar() {
 
   downloadTarArchive \
     "ffmpeg" \
-    "https://www.ffmpeg.org/releases/ffmpeg-${FFMPEG_SOURCE_VALUE}.tar.bz2"
+    "https://www.ffmpeg.org/releases/ffmpeg-${FFMPEG_SOURCE_VALUE}.tar.xz"
 }
 
 # Getting sources of a particular branch or a tag of FFmpeg's git repository.
