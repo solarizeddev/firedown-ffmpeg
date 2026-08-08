@@ -74,11 +74,11 @@ If you've just forked this repo, the only thing you need to do before the first 
 
 ```bash
 # Outside the repo
-wget https://ffmpeg.org/releases/ffmpeg-8.1.tar.xz
-tar -xf ffmpeg-8.1.tar.xz
+wget https://ffmpeg.org/releases/ffmpeg-9.0.tar.xz
+tar -xf ffmpeg-9.0.tar.xz
 
 # Inside the repo
-./firedown/scripts/generate-hls-patch.sh /path/to/ffmpeg-8.1
+./firedown/scripts/generate-hls-patch.sh /path/to/ffmpeg-9.0
 ```
 
 The placeholder file at `firedown/patches/0002-hls-c-remove-keepalive-branches.patch` will be overwritten with a real, applying patch. Commit it.

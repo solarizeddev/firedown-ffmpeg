@@ -7,8 +7,8 @@ own `CLAUDE.md` has the media-capture and download-flow context.
 
 ## What this repo does
 
-`ffmpeg-android-maker.sh` downloads vanilla FFmpeg (pinned to **8.1.2** via
-`scripts/parse-arguments.sh` → `SOURCE_VALUE=8.1.2`, `TAR`) and, **after**
+`ffmpeg-android-maker.sh` downloads vanilla FFmpeg (pinned to **9.0** via
+`scripts/parse-arguments.sh` → `SOURCE_VALUE=9.0`, `TAR`) and, **after**
 download / **before** per-ABI builds, applies Firedown's modifications via
 `firedown/apply-firedown-patches.sh` (wired in by the hook in
 `ffmpeg-android-maker.sh`). Output `.so`s are synced into the app with the app
@@ -22,7 +22,7 @@ re-validated against the new source (the generators below diff against vanilla).
 | kind | file | purpose |
 |------|------|---------|
 | replacement | `replacements/libavformat/http.c` | **OkHttp JNI backend.** FFmpeg's HTTP is bridged to the app's OkHttp client (`FFmpegOkhttp`) via a custom AVIO handler. Carries headers/Range/206 handling. Also sets `h->is_streamed = (total <= 0)` so a seekable-but-unknown-size fMP4 segment stream doesn't defeat the mov `read_header` early-out (see "two different walks" below). |
-| replacement | `replacements/libavcodec/webp.c`, `replacements/libavformat/webp_anim_dec.c` | Animated WebP decoder + demuxer (FFmpeg PR #22975). |
+| native (9.0) | `webp_anim` decoder + demuxer | Animated WebP is **built into FFmpeg 9.0** (the work formerly carried as FFmpeg PR #22975 landed upstream), so this fork no longer vendors a `webp.c` / `webp_anim_dec.c` replacement — `scripts/ffmpeg/build.sh` just adds `webp_anim` to the decoder + demuxer allow-lists. Still-WebP over HTTP uses the `image_webp_pipe` demuxer (note the `image_` prefix — the bare `webp_pipe` name matches nothing). |
 | patch | `patches/0002-hls-c-remove-keepalive-branches.patch` | Removes hls.c `open_url_keepalive` paths (OkHttp pools at the transport layer). Generator: `scripts/generate-hls-patch.sh`. Marker: `FIREDOWN-HLS-PATCHED`. |
 | patch | `patches/0004-hls-c-single-use-key-cache.patch` | **Single-use AES-key cache** (see below). Generator: `scripts/generate-keycache-patch.sh`. Marker: `FIREDOWN-HLS-KEYCACHE`. |
 | patch | `patches/0005-hls-c-bail-on-consecutive-segment-failures.patch` | **Bail on an all-failing segment stream** (see below). Generator: `scripts/generate-segfail-patch.sh`. Marker: `FIREDOWN-HLS-SEGFAIL`. |

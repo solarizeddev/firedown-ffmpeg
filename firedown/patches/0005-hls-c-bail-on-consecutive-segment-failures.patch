@@ -21,7 +21,7 @@ VOD; fails fast on a fully-broken stream. Marker: FIREDOWN-HLS-SEGFAIL.
 
 --- a/libavformat/hls.c
 +++ b/libavformat/hls.c
-@@ -130,6 +130,12 @@
+@@ -131,6 +131,12 @@
      int broken;
      int64_t cur_seq_no;
      int64_t last_seq_no;
@@ -34,7 +34,7 @@ VOD; fails fast on a fully-broken stream. Marker: FIREDOWN-HLS-SEGFAIL.
      int m3u8_hold_counters;
      int64_t cur_seg_offset;
      int64_t last_load_time;
-@@ -1638,6 +1644,18 @@
+@@ -1744,6 +1750,18 @@
      return ret;
  }
  
@@ -53,7 +53,7 @@ VOD; fails fast on a fully-broken stream. Marker: FIREDOWN-HLS-SEGFAIL.
  static int read_data_continuous(void *opaque, uint8_t *buf, int buf_size)
  {
      struct playlist *v = opaque;
-@@ -1688,12 +1706,26 @@
+@@ -1794,12 +1812,26 @@
                         v->index);
                  v->cur_seq_no++;
                  segment_retries = 0;
