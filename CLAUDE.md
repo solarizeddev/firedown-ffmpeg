@@ -162,6 +162,39 @@ wall time; lower the constant if that feels long.
   DASH demuxer (`dashdec.c`) have the same unbounded-skip shape; if a dead DASH
   stream is ever observed to hang, mirror this counter there.
 
+## AV1 needs `-dav1d` — the native `av1` decoder is a hwaccel-only stub
+
+`libavcodec/av1dec.c` (the built-in `av1` decoder that the allow-list enables)
+contains **no software decode path** — it only wraps hardware acceleration
+back-ends. This build passes `--disable-hwaccels` (desktop hwaccels don't apply
+on Android), so the native decoder can NEVER produce a frame: every
+`avcodec_send_packet`/`receive_frame` fails with `AVERROR(ENOSYS)` (**-38** in
+the app's `thumbnailer.c` logs), at every seek position including 0. Symptom in
+the app: an AV1 download (YouTube serves AV1 at ≤1080p on modern devices) plays
+fine via the platform's MediaCodec but shows a permanent mime-glyph thumbnail —
+MediaMetadataRetriever also fails AV1 frame extraction on many devices (Samsung
+a42xq confirmed), so the FFmpeg fallback is the last resort and it hits the
+stub.
+
+Software AV1 decode requires **libdav1d**, which is TWO opt-ins:
+
+1. Build with the library: `./ffmpeg-android-maker.sh -dav1d -abi=arm64-v8a,x86_64`
+   (host needs `meson`, `ninja` and `nasm` for the dav1d build).
+2. The decoder allow-list must name it — `--enable-libdav1d` only makes the
+   decoder *available*; `--disable-decoders` still excludes it unless it's in
+   the `--enable-decoder=` list. `scripts/ffmpeg/build.sh` appends `,libdav1d`
+   to that list automatically when the library is in
+   `FFMPEG_EXTERNAL_LIBRARIES` (the `FIREDOWN_AV1_SW_DECODER` conditional), so
+   the flag alone is enough — but don't remove that conditional thinking the
+   list already covers AV1 via the `av1` entry (that's the stub).
+
+Once built, no app-side change is needed: `avcodec_find_decoder(AV_CODEC_ID_AV1)`
+returns `libdav1d` automatically (it registers at a higher priority than the
+stub). Ship via the usual `.so` rebuild + firedown's `scripts/sync-ffmpeg.sh`.
+The app side also mitigates independently: the youtube extension now prefers
+H264 over AV1 at equal heights, so AV1 only appears for >1080p picks — but
+already-downloaded AV1 files keep failing until this rebuild lands.
+
 ## Two different "walks to EOF" — don't conflate them
 
 1. **read_header walk (seekability):** a seekable-but-unknown-size segment

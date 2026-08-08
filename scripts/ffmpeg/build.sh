@@ -21,6 +21,20 @@ do
   ADDITIONAL_COMPONENTS+=" --enable-$LIBARY_NAME"
 done
 
+# Firedown: the decoder allow-list below (--disable-decoders + an explicit
+# --enable-decoder=... set) excludes the libdav1d DECODER even when the
+# library itself is built in (-dav1d) — enabling the library only makes the
+# decoder AVAILABLE, the allow-list still has to name it. Without it the only
+# AV1 decoder in the build is the native `av1` one, which is a hwaccel-only
+# stub: with --disable-hwaccels it can never produce a frame in software, so
+# every AV1 thumbnail/frame-grab fails with AVERROR(ENOSYS) (ret -38 in
+# thumbnailer.c logs) while playback works fine via the platform's MediaCodec.
+# Appended conditionally so a build WITHOUT -dav1d still configures cleanly.
+FIREDOWN_AV1_SW_DECODER=
+if [[ " ${FFMPEG_EXTERNAL_LIBRARIES[@]} " == *" libdav1d "* ]]; then
+  FIREDOWN_AV1_SW_DECODER=",libdav1d"
+fi
+
 # Referencing dependencies without pkgconfig
 DEP_CFLAGS="-I${BUILD_DIR_EXTERNAL}/${ANDROID_ABI}/include"
 DEP_LD_FLAGS="-L${BUILD_DIR_EXTERNAL}/${ANDROID_ABI}/lib $FFMPEG_EXTRA_LD_FLAGS"
@@ -69,7 +83,7 @@ EXTRA_LDFLAGS="-Wl,-z,max-page-size=16384 -Wl,--gc-sections $DEP_LD_FLAGS"
   --enable-encoder=aac \
   --enable-encoder=gif \
   --disable-decoders \
-  --enable-decoder=h264,hevc,vp8,vp9,av1,mpeg4,mjpeg,aac,aac_latm,mp3,opus,vorbis,flac,ac3,eac3,pcm_s16le,pcm_s16be,pcm_u8,gif,png,webp,webp_anim,bmp,tiff,apng \
+  --enable-decoder=h264,hevc,vp8,vp9,av1,mpeg4,mjpeg,aac,aac_latm,mp3,opus,vorbis,flac,ac3,eac3,pcm_s16le,pcm_s16be,pcm_u8,gif,png,webp,webp_anim,bmp,tiff,apng${FIREDOWN_AV1_SW_DECODER} \
   --disable-demuxers \
   --enable-demuxer=mov,matroska,hls,dash,mpegts,flv,webm_dash_manifest,aac,mp3,ogg,flac,wav,m4v,image2,image_webp_pipe,webp_anim,ico,apng,gif \
   --disable-muxers \
