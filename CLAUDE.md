@@ -178,8 +178,9 @@ stub.
 
 Software AV1 decode requires **libdav1d**, which is TWO opt-ins:
 
-1. Build with the library: `./ffmpeg-android-maker.sh -dav1d -abi=arm64-v8a,x86_64`
-   (host needs `meson`, `ninja` and `nasm` for the dav1d build).
+1. Build with the library: `./ffmpeg-android-maker.sh -dav1d -abis=arm64-v8a,x86_64`
+   (`--enable-libdav1d` is the same flag's long form; host needs `meson`,
+   `ninja` and `nasm` for the dav1d build).
 2. The decoder allow-list must name it — `--enable-libdav1d` only makes the
    decoder *available*; `--disable-decoders` still excludes it unless it's in
    the `--enable-decoder=` list. `scripts/ffmpeg/build.sh` appends `,libdav1d`
