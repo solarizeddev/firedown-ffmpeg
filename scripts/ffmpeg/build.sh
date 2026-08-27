@@ -57,6 +57,14 @@ EXTRA_LDFLAGS="-Wl,-z,max-page-size=16384 -Wl,--gc-sections $DEP_LD_FLAGS"
 #     allow-list approach — only the codecs/containers/parsers/bitstream-filters/filters
 #     Firedown actually touches are compiled in. Add a name back here when you hit a
 #     stream that needs it.
+#     Gotcha that shipped: an EXTENSIONLESS image URL needs the content-probing
+#     image_*_pipe demuxer for its format — image2 matches by FILENAME only. With
+#     only image2 + image_webp_pipe enabled, every extensionless jpeg/png (Google
+#     Maps place photos, lh3.googleusercontent.com) failed avformat_open_input at
+#     the capture probe (HTTP 200, real image/jpeg bytes, "Error extracting
+#     metaData Uri") while extensionless webp TILES probed fine — the tell that it
+#     was the demuxer list, not transport. The matching decoders (mjpeg, png) were
+#     already enabled; only the demuxers were missing.
 # - --disable-outdevs / --disable-indevs: no input/output devices on Android
 # - --disable-ffprobe / --disable-ffmpeg / --disable-doc: skip CLI tools and docs
 
@@ -85,7 +93,7 @@ EXTRA_LDFLAGS="-Wl,-z,max-page-size=16384 -Wl,--gc-sections $DEP_LD_FLAGS"
   --disable-decoders \
   --enable-decoder=h264,hevc,vp8,vp9,av1,mpeg4,mjpeg,aac,aac_latm,mp3,opus,vorbis,flac,ac3,eac3,pcm_s16le,pcm_s16be,pcm_u8,gif,png,webp,webp_anim,bmp,tiff,apng${FIREDOWN_AV1_SW_DECODER} \
   --disable-demuxers \
-  --enable-demuxer=mov,matroska,hls,dash,mpegts,flv,webm_dash_manifest,aac,mp3,ogg,flac,wav,m4v,image2,image_webp_pipe,webp_anim,ico,apng,gif \
+  --enable-demuxer=mov,matroska,hls,dash,mpegts,flv,webm_dash_manifest,aac,mp3,ogg,flac,wav,m4v,image2,image_jpeg_pipe,image_png_pipe,image_webp_pipe,webp_anim,ico,apng,gif \
   --disable-muxers \
   --enable-muxer=mp4,mov,ipod,matroska,webm,mpegts,adts,gif,mp3,ogg,flac,wav \
   --disable-parsers \
