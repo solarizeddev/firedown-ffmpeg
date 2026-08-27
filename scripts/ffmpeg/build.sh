@@ -91,13 +91,13 @@ EXTRA_LDFLAGS="-Wl,-z,max-page-size=16384 -Wl,--gc-sections $DEP_LD_FLAGS"
   --enable-encoder=aac \
   --enable-encoder=gif \
   --disable-decoders \
-  --enable-decoder=h264,hevc,vp8,vp9,av1,mpeg4,mjpeg,aac,aac_latm,mp3,opus,vorbis,flac,ac3,eac3,pcm_s16le,pcm_s16be,pcm_u8,gif,png,webp,webp_anim,bmp,tiff,apng${FIREDOWN_AV1_SW_DECODER} \
+  --enable-decoder=h264,hevc,vp8,vp9,av1,mpeg1video,mpeg2video,mpeg4,mjpeg,aac,aac_latm,mp3,opus,vorbis,flac,alac,ac3,eac3,pcm_s16le,pcm_s16be,pcm_s24le,pcm_s32le,pcm_f32le,pcm_u8,gif,png,webp,webp_anim,bmp,tiff,apng${FIREDOWN_AV1_SW_DECODER} \
   --disable-demuxers \
-  --enable-demuxer=mov,matroska,hls,dash,mpegts,flv,webm_dash_manifest,aac,mp3,ogg,flac,wav,m4v,image2,image_jpeg_pipe,image_png_pipe,image_webp_pipe,webp_anim,ico,apng,gif \
+  --enable-demuxer=mov,matroska,hls,dash,mpegts,mpegps,avi,flv,webm_dash_manifest,aac,mp3,ogg,flac,wav,amr,m4v,image2,image_jpeg_pipe,image_png_pipe,image_webp_pipe,image_bmp_pipe,image_tiff_pipe,image_svg_pipe,webp_anim,ico,apng,gif \
   --disable-muxers \
   --enable-muxer=mp4,mov,ipod,matroska,webm,mpegts,adts,gif,mp3,ogg,flac,wav \
   --disable-parsers \
-  --enable-parser=h264,hevc,aac,aac_latm,mpegaudio,opus,vorbis,vp8,vp9,av1,flac,mjpeg,gif \
+  --enable-parser=h264,hevc,aac,aac_latm,mpegaudio,mpegvideo,mpeg4video,ac3,opus,vorbis,vp8,vp9,av1,flac,mjpeg,gif \
   --disable-bsfs \
   --enable-bsf=aac_adtstoasc,h264_mp4toannexb,hevc_mp4toannexb,extract_extradata,vp9_superframe \
   --disable-filters \
