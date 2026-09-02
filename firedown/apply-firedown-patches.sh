@@ -203,4 +203,46 @@ else
     echo "         a live HLS whose fragments all 403) will probe/download forever." >&2
 fi
 
+# ----------------------------------------------------------------------
+# Step 3d: dashdec.c — drop xmlCleanupParser() after each manifest parse
+# ----------------------------------------------------------------------
+# Separate patch (its own FIREDOWN-DASH-XMLCLEANUP marker), a different file
+# from the hls.c patches above, so it is idempotent on its own. Removes the
+# libxml2 process-exit teardown that dashdec.c ran after EVERY manifest parse:
+# it destroys libxml2's static global mutexes, so a second DASH manifest parse
+# on another thread of the same process (capture-probe pool, downloader, a
+# live refresh_manifest) locked a destroyed mutex and bionic aborted the app
+# ("pthread_mutex_lock called on a destroyed mutex", 1.1.91 tombstone).
+
+DASH_FILE="$FFMPEG_DIR/libavformat/dashdec.c"
+XMLCLEANUP_PATCH="$FIREDOWN_DIR/patches/0006-dashdec-c-drop-xmlCleanupParser.patch"
+
+if [[ ! -f "$DASH_FILE" ]]; then
+    echo "ERROR: $DASH_FILE not found" >&2
+    exit 8
+fi
+
+if grep -q "FIREDOWN-DASH-XMLCLEANUP" "$DASH_FILE"; then
+    echo "[firedown] dashdec.c xmlCleanupParser removal already applied, skipping"
+elif [[ -f "$XMLCLEANUP_PATCH" ]] && head -1 "$XMLCLEANUP_PATCH" | grep -q '^From '; then
+    echo "[firedown] Applying dashdec.c xmlCleanupParser removal patch..."
+    if ! patch -p1 --forward --reject-file=- -d "$FFMPEG_DIR" < "$XMLCLEANUP_PATCH"; then
+        echo "ERROR: dashdec.c xmlCleanupParser patch failed to apply" >&2
+        echo "       FFmpeg source may have changed; regenerate the patch with:" >&2
+        echo "       ./firedown/scripts/generate-xmlcleanup-patch.sh $FFMPEG_DIR" >&2
+        exit 9
+    fi
+else
+    echo "WARNING: $XMLCLEANUP_PATCH is missing or a placeholder" >&2
+    echo "         Generate it with: ./firedown/scripts/generate-xmlcleanup-patch.sh $FFMPEG_DIR" >&2
+    echo "         Continuing without it — two DASH manifests parsed concurrently in one" >&2
+    echo "         process can abort it (destroyed libxml2 mutex)." >&2
+fi
+
+# Independent post-patch verification: the call must be gone, not merely marked.
+if grep -q 'xmlCleanupParser();' "$DASH_FILE"; then
+    echo "ERROR: dashdec.c still calls xmlCleanupParser() after patching" >&2
+    exit 9
+fi
+
 echo "[firedown] Done."

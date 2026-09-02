@@ -1,0 +1,43 @@
+From 0000000000000000000000000000000000000006 Mon Sep 17 00:00:00 2001
+From: solarizeddev <info@solarized.dev>
+Date: Thu, 1 Jan 1970 00:00:00 +0000
+Subject: [PATCH 6/6] dashdec: drop xmlCleanupParser() after each manifest parse
+
+parse_manifest() ended every DASH manifest parse with xmlCleanupParser(),
+libxml2's process-exit teardown, which the library documents as unsafe
+while any other thread is using it: in libxml2 2.13 it pthread_mutex_destroys
+the static global xmlDictMutex (and the globals/memory mutexes). Firedown
+runs ffmpeg on several threads of one process, so two overlapping DASH
+manifest parses raced: one finished and destroyed the mutex, the other
+locked it from xmlDictFree() while tearing down its parser context, and
+bionic's FORTIFY aborted the app ("pthread_mutex_lock called on a destroyed
+mutex", 1.1.91 tombstone under avformat_open_input <- jni_extract_metadata).
+
+Drop the call. Nothing leaks: xmlFreeDoc() and xmlReadMemory() already free
+every per-document allocation, and xmlInitParser() allocates nothing that the
+next parse would not re-create. Marker: FIREDOWN-DASH-XMLCLEANUP.
+---
+ libavformat/dashdec.c | varies
+
+--- a/libavformat/dashdec.c
++++ b/libavformat/dashdec.c
+@@ -1431,7 +1431,18 @@
+ cleanup:
+         /*free the document */
+         xmlFreeDoc(doc);
+-        xmlCleanupParser();
++        /* FIREDOWN-DASH-XMLCLEANUP: vanilla calls xmlCleanupParser() here.
++         * That is libxml2's process-exit teardown, documented as unsafe
++         * while any other thread uses the library: it destroys the static
++         * global mutexes (xmlDictMutex among them), so a second DASH
++         * manifest being parsed concurrently on another thread of this
++         * process (the capture-probe pool, the downloader, a live
++         * refresh_manifest) locks a destroyed mutex in xmlDictFree() and
++         * bionic aborts the process ("pthread_mutex_lock called on a
++         * destroyed mutex"). Nothing leaks without it: xmlFreeDoc() above
++         * frees the document and xmlReadMemory() its parser context, and
++         * xmlInitParser() allocates nothing that the next parse would not
++         * simply re-create. */
+         xmlFreeNode(mpd_baseurl_node);
+     }
+ 

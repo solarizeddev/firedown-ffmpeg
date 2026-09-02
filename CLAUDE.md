@@ -26,6 +26,7 @@ re-validated against the new source (the generators below diff against vanilla).
 | patch | `patches/0002-hls-c-remove-keepalive-branches.patch` | Removes hls.c `open_url_keepalive` paths (OkHttp pools at the transport layer). Generator: `scripts/generate-hls-patch.sh`. Marker: `FIREDOWN-HLS-PATCHED`. |
 | patch | `patches/0004-hls-c-single-use-key-cache.patch` | **Single-use AES-key cache** (see below). Generator: `scripts/generate-keycache-patch.sh`. Marker: `FIREDOWN-HLS-KEYCACHE`. |
 | patch | `patches/0005-hls-c-bail-on-consecutive-segment-failures.patch` | **Bail on an all-failing segment stream** (see below). Generator: `scripts/generate-segfail-patch.sh`. Marker: `FIREDOWN-HLS-SEGFAIL`. |
+| patch | `patches/0006-dashdec-c-drop-xmlCleanupParser.patch` | **Drop `xmlCleanupParser()` after each DASH manifest parse** (see below). Generator: `scripts/generate-xmlcleanup-patch.sh`. Marker: `FIREDOWN-DASH-XMLCLEANUP`. |
 | patch | `patches/0001-…`, `patches/0003-…` | ffmpeg-android-maker build hook + configure flags. |
 
 `apply-firedown-patches.sh` is **idempotent** — each edit is gated on a marker
@@ -162,6 +163,55 @@ wall time; lower the constant if that feels long.
   DASH demuxer (`dashdec.c`) have the same unbounded-skip shape; if a dead DASH
   stream is ever observed to hang, mirror this counter there.
 
+## dashdec.c drop `xmlCleanupParser()` (`patches/0006`)
+
+**Root cause it fixes ("pthread_mutex_lock called on a destroyed mutex"):** a
+1.1.91 tombstone — `SIGABRT` on a capture-probe pool thread, `libavformat`
+under `avformat_open_input` ← `jni_extract_metadata`. Symbolized against the
+shipped `.so` (`libfiredown.so` BuildId matched the tombstone): `dash_read_header`
+→ `parse_manifest` → libxml2 parser teardown → `xmlDictFree` →
+`pthread_mutex_lock` on the **static** global `xmlDictMutex`. Vanilla
+`dashdec.c` ends **every** manifest parse with `xmlCleanupParser()` — libxml2's
+process-exit teardown, whose own doc says calling it while another thread uses
+the library "may crash the application". In the libxml2 this fork builds
+(2.13.6) it runs `xmlCleanupDictInternal()` = `pthread_mutex_destroy` on that
+mutex (plus the globals/memory mutexes). Firedown runs ffmpeg on several
+threads of one process (capture-probe pool of `cores/2`, the downloader, the
+post-download metadata refresh), so two DASH manifest parses overlapping is
+enough: thread A finishes and destroys the mutex, thread B, still parsing,
+frees its parser-context dictionary, locks the destroyed mutex, and bionic's
+FORTIFY aborts the process. A **live** DASH download makes the overlap likelier
+— `refresh_manifest()` re-runs `parse_manifest()` periodically for the whole
+download. Upstream still has the call (checked against master); it is harmless
+only in single-threaded users like the ffmpeg CLI.
+
+**The fix:** delete the call. **It does not leak** — check it in libxml2, not
+by intuition: every per-document allocation is freed by `xmlFreeDoc()` (kept)
+and by `xmlReadMemory()` freeing its own parser context; `xmlCleanupParser()`
+only tears down the one-time library state `xmlInitParser()` creates, and
+2.13's `xmlInitParser()` is written to make **no allocations** ("the
+initialization code must not make memory allocations"). The encoding-handler
+table it frees holds only application-registered handlers (dashdec registers
+none; the defaults are a `static const` array), the catalog/schema caches are
+empty unless loaded, and per-thread globals are freed by a TLS destructor on
+thread exit regardless. So without the call the process keeps a few hundred
+bytes of static state for its lifetime; with it, dashdec tore that state down
+and rebuilt it per manifest — churn on top of the race.
+
+**Design decisions to preserve:**
+- **Belongs in the fork, not upstream** — same reasoning as the key cache:
+  libavformat assumes one consumer per process, Firedown's several share one.
+- **No app-side workaround exists.** The app cannot know an input is DASH
+  before `avformat_open_input` runs the demuxer, so it cannot serialize only
+  DASH opens, and serializing every probe/download would throw away the pool.
+- **Don't "fix" it by adding `xmlCleanupParser()` to a global close hook
+  instead.** Any call while another thread may parse is the same bug; on
+  Android the process is simply killed, so "never" is the correct answer.
+- The generator refuses to emit a patch if any `xmlCleanupParser();` call
+  survives in `dashdec.c`, and `apply-firedown-patches.sh` re-checks that
+  after applying — a future FFmpeg that adds a second call fails the build
+  loudly instead of shipping the race back.
+
 ## AV1 needs `-dav1d` — the native `av1` decoder is a hwaccel-only stub
 
 `libavcodec/av1dec.c` (the built-in `av1` decoder that the allow-list enables)
@@ -209,7 +259,9 @@ already-downloaded AV1 files keep failing until this rebuild lands.
 ## After changing a patch / bumping FFmpeg
 
 - Regenerate against the new vanilla source: `scripts/generate-hls-patch.sh
-  <ffmpeg-src>` and `scripts/generate-keycache-patch.sh <ffmpeg-src>`.
+  <ffmpeg-src>`, `scripts/generate-keycache-patch.sh <ffmpeg-src>`,
+  `scripts/generate-segfail-patch.sh <ffmpeg-src>` and
+  `scripts/generate-xmlcleanup-patch.sh <ffmpeg-src>`.
 - Confirm `apply-firedown-patches.sh <ffmpeg-src>` applies cleanly and is
   idempotent (run twice).
 - Rebuild the `.so`s and run the app repo's `scripts/sync-ffmpeg.sh`.

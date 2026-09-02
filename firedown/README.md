@@ -26,17 +26,33 @@ firedown/
 │   │                            # specific FFmpeg version, NOT applied in this
 │   │                            # repo (applied at build time by apply-firedown-patches.sh)
 │   │
-│   └── 0003-build-sh-firedown-configure-flags.patch
-│                                # Firedown's configure flags added to scripts/ffmpeg/build.sh
+│   ├── 0003-build-sh-firedown-configure-flags.patch
+│   │                            # Firedown's configure flags added to scripts/ffmpeg/build.sh
+│   │
+│   ├── 0004-hls-c-single-use-key-cache.patch
+│   │                            # libavformat/hls.c — process-global cache of
+│   │                            # single-use AES keys (build-time, like 0002)
+│   │
+│   ├── 0005-hls-c-bail-on-consecutive-segment-failures.patch
+│   │                            # libavformat/hls.c — fail fast when every
+│   │                            # segment fails to open (build-time)
+│   │
+│   └── 0006-dashdec-c-drop-xmlCleanupParser.patch
+│                                # libavformat/dashdec.c — drop the per-parse
+│                                # xmlCleanupParser() that destroyed libxml2's
+│                                # global mutexes under concurrent use (build-time)
 │
 └── scripts/
     ├── install-firedown-hook.sh # One-time: re-applies the modification to
     │                            # ffmpeg-android-maker.sh against a fresh
     │                            # upstream pull. Idempotent.
     │
-    └── generate-hls-patch.sh    # Generates patches/0002 from a vanilla
-                                 # FFmpeg source tree. Run when bumping
-                                 # FFmpeg version.
+    ├── generate-hls-patch.sh    # Generates patches/0002 from a vanilla
+    │                            # FFmpeg source tree. Run when bumping
+    │                            # FFmpeg version.
+    ├── generate-keycache-patch.sh   # Generates patches/0004, same contract.
+    ├── generate-segfail-patch.sh    # Generates patches/0005, same contract.
+    └── generate-xmlcleanup-patch.sh # Generates patches/0006, same contract.
 ```
 
 ## Two kinds of changes
@@ -64,6 +80,8 @@ These modify files inside the FFmpeg source tree, which is downloaded fresh each
 |---|---|---|
 | `libavformat/http.c` | Full replacement with OkHttp JNI backend | `firedown/replacements/libavformat/http.c` is copied over at build time |
 | `libavformat/hls.c` | Remove `open_url_keepalive` code paths | `firedown/patches/0002-...patch` is applied at build time |
+| `libavformat/hls.c` | Single-use AES-key cache; bail on an all-failing segment stream | `firedown/patches/0004-...patch` and `0005-...patch`, applied at build time |
+| `libavformat/dashdec.c` | Drop the per-parse `xmlCleanupParser()` (destroys libxml2's global mutexes; crashed concurrent DASH probes) | `firedown/patches/0006-...patch` is applied at build time |
 | `configure` | Add `http_protocol_deps="jni"` and `https_protocol_deps="jni"` | `apply-firedown-patches.sh` uses `awk` to insert the declarations |
 
 `apply-firedown-patches.sh` is invoked by the modified `ffmpeg-android-maker.sh` after FFmpeg source is downloaded but before any per-ABI build runs. It performs all three operations idempotently.
