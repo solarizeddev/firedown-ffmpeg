@@ -5,3 +5,6 @@ stats
 .DS_Store
 .idea
 *.iml
+
+# Release tarballs built by scripts/package-release.sh (uploaded to GitHub Releases)
+dist

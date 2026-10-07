@@ -256,6 +256,33 @@ already-downloaded AV1 files keep failing until this rebuild lands.
    a phantom box to EOF *during `find_stream_info`*. Fixed by the `0004` key
    cache. `is_streamed` does **not** affect this one.
 
+## Shipping the output — GitHub Releases, consumed by the app's fetch
+
+`output/` is gitignored and used to live only on the box that ran the build;
+the app's `scripts/sync-ffmpeg.sh` copied it over by path, so a second machine
+could not build the app. The libraries now ship as a **GitHub Release asset of
+this repo**, which the app fetches by a pin (`firedown.ffmpegRelease` in
+firedown's `gradle.properties`; `scripts/fetch-prebuilts.sh` there, run from
+its `settings.gradle` on every sync). The app repo's `docs/NEW-MACHINE.md` is
+the end-to-end checklist.
+
+- `scripts/package-release.sh <tag>` → `dist/firedown-ffmpeg-<tag>-android.tar.gz`
+  + `.sha256`: `lib/<abi>/*.so` for every ABI in `output/lib`, `include/` taken
+  from arm64-v8a (the canonical copy, the same convention `sync-ffmpeg.sh`
+  always used — the app's CMake has one include dir), `version.txt`. It
+  refuses an ABI missing one of the six libraries the app's CMake imports, and
+  a tag whose version half is not `SOURCE_VALUE`. The tar is reproducible
+  (fixed owner/mtime/order) so a re-run after a failed upload has the same
+  sha256.
+- `scripts/publish-release.sh <tag>` → clean-tree check (the tag must name the
+  exact source that produced `output/`), annotated tag at HEAD pushed,
+  package, `gh release create` with both files, and it prints the pin line.
+- **Tag format `v<ffmpeg-version>-<n>`**, e.g. `v9.0.2-1`, `-2` for a rebuild
+  on the same FFmpeg (a patch change, a new `-dav1d` build). Bumping FFmpeg
+  (`SOURCE_VALUE`) starts a new series. A tag is never re-used or re-uploaded.
+- `scripts/sync-ffmpeg.sh` in the app still exists for the dev loop (test a
+  local build before publishing); the app's fetch leaves such a copy alone.
+
 ## After changing a patch / bumping FFmpeg
 
 - Regenerate against the new vanilla source: `scripts/generate-hls-patch.sh
@@ -264,5 +291,7 @@ already-downloaded AV1 files keep failing until this rebuild lands.
   `scripts/generate-xmlcleanup-patch.sh <ffmpeg-src>`.
 - Confirm `apply-firedown-patches.sh <ffmpeg-src>` applies cleanly and is
   idempotent (run twice).
-- Rebuild the `.so`s and run the app repo's `scripts/sync-ffmpeg.sh`.
+- Rebuild the `.so`s, then `scripts/publish-release.sh v<ffmpeg>-<n>` and bump
+  `firedown.ffmpegRelease` in the app's `gradle.properties` (or, for a local
+  test first, the app repo's `scripts/sync-ffmpeg.sh`).
 - Don't push to `master`/default without being asked; develop on a branch.
