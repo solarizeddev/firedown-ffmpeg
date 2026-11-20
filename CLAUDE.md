@@ -7,8 +7,8 @@ own `CLAUDE.md` has the media-capture and download-flow context.
 
 ## What this repo does
 
-`ffmpeg-android-maker.sh` downloads vanilla FFmpeg (pinned to **9.0.2** via
-`scripts/parse-arguments.sh` → `SOURCE_VALUE=9.0.2`, `TAR`) and, **after**
+`ffmpeg-android-maker.sh` downloads vanilla FFmpeg (pinned to **9.1** via
+`scripts/parse-arguments.sh` → `SOURCE_VALUE=9.1`, `TAR`) and, **after**
 download / **before** per-ABI builds, applies Firedown's modifications via
 `firedown/apply-firedown-patches.sh` (wired in by the hook in
 `ffmpeg-android-maker.sh`). Output `.so`s are synced into the app with the app
@@ -23,7 +23,7 @@ re-validated against the new source (the generators below diff against vanilla).
 |------|------|---------|
 | replacement | `replacements/libavformat/http.c` | **OkHttp JNI backend.** FFmpeg's HTTP is bridged to the app's OkHttp client (`FFmpegOkhttp`) via a custom AVIO handler. Carries headers/Range/206 handling. Also sets `h->is_streamed = (total <= 0)` so a seekable-but-unknown-size fMP4 segment stream doesn't defeat the mov `read_header` early-out (see "two different walks" below). |
 | native (9.0) | `webp_anim` decoder + demuxer | Animated WebP is **built into FFmpeg 9.0** (the work formerly carried as FFmpeg PR #22975 landed upstream), so this fork no longer vendors a `webp.c` / `webp_anim_dec.c` replacement — `scripts/ffmpeg/build.sh` just adds `webp_anim` to the decoder + demuxer allow-lists. Still-WebP over HTTP uses the `image_webp_pipe` demuxer (note the `image_` prefix — the bare `webp_pipe` name matches nothing). |
-| patch | `patches/0002-hls-c-remove-keepalive-branches.patch` | Removes hls.c `open_url_keepalive` paths (OkHttp pools at the transport layer). Generator: `scripts/generate-hls-patch.sh`. Marker: `FIREDOWN-HLS-PATCHED`. |
+| patch | `patches/0002-hls-c-remove-keepalive-branches.patch` | Removes hls.c `open_url_keepalive` paths (OkHttp pools at the transport layer). Since 9.1 it also makes `is_native_http()` return 0: upstream uses that to **keep a finished segment's/playlist's input open** for a follow-up request on the same connection, and with the keepalive branch gone a kept-open `*pb` would reach `io_open()` non-NULL — vanilla 9.1 `av_assert0`s there, and the 9.0 shape of this patch would silently overwrite it, leaking the `URLContext` (the `FFmpegOkhttp` object and its JNI refs, see #300) once per segment. The generator hard-fails if any of its edits does not land. Generator: `scripts/generate-hls-patch.sh`. Marker: `FIREDOWN-HLS-PATCHED`. |
 | patch | `patches/0004-hls-c-single-use-key-cache.patch` | **Single-use AES-key cache** (see below). Generator: `scripts/generate-keycache-patch.sh`. Marker: `FIREDOWN-HLS-KEYCACHE`. |
 | patch | `patches/0005-hls-c-bail-on-consecutive-segment-failures.patch` | **Bail on an all-failing segment stream** (see below). Generator: `scripts/generate-segfail-patch.sh`. Marker: `FIREDOWN-HLS-SEGFAIL`. |
 | patch | `patches/0006-dashdec-c-drop-xmlCleanupParser.patch` | **Drop `xmlCleanupParser()` after each DASH manifest parse** (see below). Generator: `scripts/generate-xmlcleanup-patch.sh`. Marker: `FIREDOWN-DASH-XMLCLEANUP`. Moot since fdxml; kept, harmless. |
@@ -381,7 +381,7 @@ the end-to-end checklist.
 - `scripts/publish-release.sh <tag>` → clean-tree check (the tag must name the
   exact source that produced `output/`), annotated tag at HEAD pushed,
   package, `gh release create` with both files, and it prints the pin line.
-- **Tag format `v<ffmpeg-version>-<n>`**, e.g. `v9.0.2-1`, `-2` for a rebuild
+- **Tag format `v<ffmpeg-version>-<n>`**, e.g. `v9.1-1`, `-2` for a rebuild
   on the same FFmpeg (a patch change, a new `-dav1d` build). Bumping FFmpeg
   (`SOURCE_VALUE`) starts a new series. A tag is never re-used or re-uploaded.
 - `scripts/sync-ffmpeg.sh` in the app still exists for the dev loop (test a

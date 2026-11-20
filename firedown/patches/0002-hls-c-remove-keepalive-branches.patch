@@ -11,6 +11,12 @@ This patch:
   - removes the open_url_keepalive call in open_url() and falls through
     directly to s->io_open
   - removes the playlist_pb keepalive reuse in the playlist parsing path
+  - makes is_native_http() return 0 (FFmpeg 9.1+), so no finished
+    segment/playlist input is kept open for reuse: with the keepalive
+    paths gone, a kept-open input would reach io_open() non-NULL and
+    either trip vanilla's av_assert0(!*pb) or leak the URLContext
+  - deletes the now-unused open_url_keepalive(), the only reference to
+    ff_http_do_new_request2(), which the OkHttp http.c does not define
 
 Adds a FIREDOWN-HLS-PATCHED marker comment so apply-firedown-patches.sh
 can detect when the patch is already applied.
@@ -19,11 +25,49 @@ can detect when the patch is already applied.
 
 --- a/libavformat/hls.c
 +++ b/libavformat/hls.c
-@@ -730,23 +730,8 @@
+@@ -796,30 +796,14 @@
+ 
+ static int is_native_http(AVIOContext *pb)
+ {
+-#if !CONFIG_HTTP_PROTOCOL
++    /* FIREDOWN-HLS-PATCHED: never report a native-http input. Upstream
++     * uses this to keep a finished segment's (or playlist's) connection
++     * open and re-request on it (http_persistent). Firedown's http(s)
++     * protocol is OkHttp over JNI, which pools at the transport layer, and
++     * the keepalive paths that would consume a kept-open *pb are removed;
++     * a kept-open input would only reach io_open() non-NULL and leak the
++     * URLContext (the FFmpegOkhttp object and its JNI refs) per segment. */
+     return 0;
+-#else
+-    URLContext *uc = ffio_geturlcontext(pb);
+-    return uc && !strncmp(uc->prot->name, "http", 4);
+-#endif
+-}
+-
+-static int open_url_keepalive(AVFormatContext *s, AVIOContext **pb,
+-                              const char *url, AVDictionary **options)
+-{
+-#if !CONFIG_HTTP_PROTOCOL
+-    return AVERROR_PROTOCOL_NOT_FOUND;
+-#else
+-    int ret;
+-    URLContext *uc = ffio_geturlcontext(*pb);
+-    av_assert0(uc);
+-    (*pb)->eof_reached = 0;
+-    ret = ff_http_do_new_request2(uc, url, options);
+-    if (ret < 0) {
+-        ff_format_io_close(s, pb);
+-    }
+-    return ret;
+-#endif
+ }
+ 
+ static int open_url(AVFormatContext *s, AVIOContext **pb, const char *url,
+@@ -873,24 +857,11 @@
      av_dict_copy(&tmp, *opts, 0);
      av_dict_copy(&tmp, opts2, 0);
  
--    if (is_http && c->http_persistent && *pb) {
+-    if (is_http && c->http_persistent && is_native_http(*pb)) {
 -        ret = open_url_keepalive(c->ctx, pb, url, &tmp);
 -        if (ret == AVERROR_EXIT) {
 -            av_dict_free(&tmp);
@@ -38,16 +82,20 @@ can detect when the patch is already applied.
 -            ret = s->io_open(s, pb, url, AVIO_FLAG_READ, &tmp);
 -        }
 -    } else {
+-        av_assert0(!*pb);
 -        ret = s->io_open(s, pb, url, AVIO_FLAG_READ, &tmp);
 -    }
-+    /* FIREDOWN-HLS-PATCHED: keepalive removed, all I/O via io_open */
++    /* FIREDOWN-HLS-PATCHED: keepalive removed, all I/O via io_open.
++     * Nothing keeps a connection open across requests any more
++     * (is_native_http() is 0), so *pb is always NULL here. */
++    av_assert0(!*pb);
 +    ret = s->io_open(s, pb, url, AVIO_FLAG_READ, &tmp);
      if (ret >= 0) {
          // update cookies on http response with setcookies.
          char *new_cookies = NULL;
-@@ -836,19 +821,6 @@
-     int prev_n_segments = 0;
-     int64_t prev_start_seq_no = -1;
+@@ -984,19 +955,6 @@
+     int time_offset_flag = 0;
+     int finished = 0;
  
 -    if (is_http && !in && c->http_persistent && c->playlist_pb) {
 -        in = c->playlist_pb;

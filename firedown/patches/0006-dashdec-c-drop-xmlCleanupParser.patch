@@ -21,7 +21,7 @@ next parse would not re-create. Marker: FIREDOWN-DASH-XMLCLEANUP.
 
 --- a/libavformat/dashdec.c
 +++ b/libavformat/dashdec.c
-@@ -1431,7 +1431,18 @@
+@@ -1469,7 +1469,18 @@
  cleanup:
          /*free the document */
          xmlFreeDoc(doc);

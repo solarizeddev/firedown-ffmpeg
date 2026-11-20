@@ -2,7 +2,7 @@
 # scripts/publish-release.sh — tag this tree and publish its build output as a
 # GitHub Release, which is how the compiled libraries travel between machines.
 #
-#   scripts/publish-release.sh <tag>            e.g. scripts/publish-release.sh v9.0.2-1
+#   scripts/publish-release.sh <tag>            e.g. scripts/publish-release.sh v9.1-1
 #   scripts/publish-release.sh <tag> --allow-dirty   (skip the clean-tree check)
 #
 # Steps: refuse a dirty tree (the tag must name EXACTLY the source that built

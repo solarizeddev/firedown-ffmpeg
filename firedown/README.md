@@ -83,7 +83,7 @@ These modify files inside the FFmpeg source tree, which is downloaded fresh each
 | FFmpeg file | What changes | Mechanism |
 |---|---|---|
 | `libavformat/http.c` | Full replacement with OkHttp JNI backend | `firedown/replacements/libavformat/http.c` is copied over at build time |
-| `libavformat/hls.c` | Remove `open_url_keepalive` code paths | `firedown/patches/0002-...patch` is applied at build time |
+| `libavformat/hls.c` | Remove `open_url_keepalive` code paths; `is_native_http()` returns 0 so no input is kept open for reuse (9.1+) | `firedown/patches/0002-...patch` is applied at build time |
 | `libavformat/hls.c` | Single-use AES-key cache; bail on an all-failing segment stream | `firedown/patches/0004-...patch` and `0005-...patch`, applied at build time |
 | `libavformat/dashdec.c` | Drop the per-parse `xmlCleanupParser()` (destroys libxml2's global mutexes; crashed concurrent DASH probes) | `firedown/patches/0006-...patch` is applied at build time |
 | `libavformat/dashdec.c` + `fdxml.{c,h}` | Parse DASH manifests through the app's `FFmpegXml` (JNI) instead of libxml2: two lines in `dashdec.c` (include + parse call), the shim copied in, and a build failure if `dashdec.c` uses a libxml2 name the shim lacks | Step 3e of `apply-firedown-patches.sh`; verified by `scripts/dashxml-harness/run.sh` |
@@ -99,11 +99,11 @@ If you've just forked this repo, the only thing you need to do before the first 
 
 ```bash
 # Outside the repo
-wget https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz
-tar -xf ffmpeg-9.0.2.tar.xz
+wget https://ffmpeg.org/releases/ffmpeg-9.1.tar.xz
+tar -xf ffmpeg-9.1.tar.xz
 
 # Inside the repo
-./firedown/scripts/generate-hls-patch.sh /path/to/ffmpeg-9.0.2
+./firedown/scripts/generate-hls-patch.sh /path/to/ffmpeg-9.1
 ```
 
 The placeholder file at `firedown/patches/0002-hls-c-remove-keepalive-branches.patch` will be overwritten with a real, applying patch. Commit it.

@@ -21,7 +21,7 @@ VOD; fails fast on a fully-broken stream. Marker: FIREDOWN-HLS-SEGFAIL.
 
 --- a/libavformat/hls.c
 +++ b/libavformat/hls.c
-@@ -131,6 +131,12 @@
+@@ -136,6 +136,12 @@
      int broken;
      int64_t cur_seq_no;
      int64_t last_seq_no;
@@ -31,10 +31,10 @@ VOD; fails fast on a fully-broken stream. Marker: FIREDOWN-HLS-SEGFAIL.
 +     * FIREDOWN_HLS_MAX_CONSECUTIVE_SEG_FAILURES, read_data_continuous
 +     * propagates the open error instead of skipping + reloading forever. */
 +    int firedown_seg_open_failures;
+     int64_t first_read_seq_no;
      int m3u8_hold_counters;
      int64_t cur_seg_offset;
-     int64_t last_load_time;
-@@ -1744,6 +1750,18 @@
+@@ -1894,6 +1900,18 @@
      return ret;
  }
  
@@ -53,7 +53,7 @@ VOD; fails fast on a fully-broken stream. Marker: FIREDOWN-HLS-SEGFAIL.
  static int read_data_continuous(void *opaque, uint8_t *buf, int buf_size)
  {
      struct playlist *v = opaque;
-@@ -1794,12 +1812,26 @@
+@@ -1946,12 +1964,26 @@
                         v->index);
                  v->cur_seq_no++;
                  segment_retries = 0;
@@ -78,5 +78,5 @@ VOD; fails fast on a fully-broken stream. Marker: FIREDOWN-HLS-SEGFAIL.
          segment_retries = 0;
 +        v->firedown_seg_open_failures = 0; /* FIREDOWN-HLS-SEGFAIL: reset run on a successful open */
          just_opened = 1;
-     }
- 
+         v->input_read_done = 0;
+         if (v->first_read_seq_no < 0)

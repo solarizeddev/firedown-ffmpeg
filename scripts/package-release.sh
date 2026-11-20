@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/package-release.sh — bundle the build output into ONE release asset.
 #
-#   scripts/package-release.sh <tag>          e.g.  scripts/package-release.sh v9.0.2-1
+#   scripts/package-release.sh <tag>          e.g.  scripts/package-release.sh v9.1-1
 #
 # Produces  dist/firedown-ffmpeg-<tag>-android.tar.gz  (+ a .sha256 beside it)
 # whose contents mirror exactly what the app's external/ffmpeg/ holds:
@@ -29,11 +29,11 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TAG="${1:-}"
 
 if [[ -z "$TAG" ]]; then
-  echo "usage: $0 <tag>   (format v<ffmpeg-version>-<n>, e.g. v9.0.2-1)" >&2
+  echo "usage: $0 <tag>   (format v<ffmpeg-version>-<n>, e.g. v9.1-1)" >&2
   exit 2
 fi
 if [[ ! "$TAG" =~ ^v([0-9]+\.[0-9]+(\.[0-9]+)?)-([0-9]+)$ ]]; then
-  echo "ERROR: tag '$TAG' is not of the form v<ffmpeg-version>-<n> (e.g. v9.0.2-1)" >&2
+  echo "ERROR: tag '$TAG' is not of the form v<ffmpeg-version>-<n> (e.g. v9.1-1)" >&2
   exit 2
 fi
 TAG_FFMPEG="${BASH_REMATCH[1]}"

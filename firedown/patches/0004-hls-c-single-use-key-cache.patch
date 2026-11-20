@@ -31,10 +31,10 @@ detect when the patch is already applied.
  #include "libavutil/dict.h"
  #include "libavutil/time.h"
 +#include "libavutil/thread.h"
+ #include "libavutil/tree.h"
  #include "avformat.h"
  #include "demux.h"
- #include "internal.h"
-@@ -1419,11 +1420,129 @@
+@@ -1600,11 +1601,129 @@
          pls->is_id3_timestamped = (pls->id3_mpegts_timestamp != AV_NOPTS_VALUE);
  }
  
@@ -165,7 +165,7 @@ detect when the patch is already applied.
      if (ret < 0) {
          av_log(pls->parent, AV_LOG_ERROR, "Unable to open key file %s, %s\n",
                 seg->key, av_err2str(ret));
-@@ -1447,6 +1566,11 @@
+@@ -1628,6 +1747,11 @@
  
      av_strlcpy(pls->key_url, seg->key, sizeof(pls->key_url));
  
