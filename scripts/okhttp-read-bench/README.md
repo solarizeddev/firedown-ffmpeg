@@ -73,7 +73,10 @@ outside noise.
   wrapper cached by address misses on nearly every read: 32,768 new
   `DirectByteBuffer`s for 256 MiB. That is the per-read allocation the
   `[OOM FIX]` in `http.c` removed. A staging buffer is wrapped once per
-  connection whatever FFmpeg does. Its copy did not show up in throughput.
+  connection whatever FFmpeg does. Its copy cost about 0.3 ms of CPU per
+  MiB at loopback speed in the exploration run and nothing measurable in the
+  run of the committed code, both within this machine's spread and far below
+  anything a real network shows.
 - The new Java method is optional. `http.c` looks it up by name and falls
   back to `okhttpRead` with 32 KiB requests on an older app, and an older
   `.so` keeps calling `okhttpRead`. The app and the `.so` can ship in either

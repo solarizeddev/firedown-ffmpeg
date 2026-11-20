@@ -7,7 +7,7 @@ import okhttp3.OkHttpClient;
 /**
  * okhttp-read-bench driver. One JVM per (native variant, Java strategy).
  *
- *   java -Dfd.read=... Bench <libpath> <label> <url> <chunk> <maxBytes> <timeLimitMs> <reps>
+ *   java [-Dfd.deadlineMs=N] Bench <libpath> <label> <url> <chunk> <maxBytes> <timeLimitMs> <reps>
  *
  * Prints one line per rep: label, then the native stats (see bench_jni.c).
  */

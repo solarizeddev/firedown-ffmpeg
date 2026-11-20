@@ -12,6 +12,7 @@
  * log callback (nothing is formatted, so counting costs a strcmp per line).
  */
 #include <jni.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <string.h>
 #include <time.h>
@@ -24,10 +25,11 @@
 enum {
     ST_BYTES, ST_NS_TOTAL, ST_NS_FIRST_2K, ST_NS_FIRST_32K, ST_CPU_NS,
     ST_READ_CALLS, ST_DBB_WRAPS, ST_BAD_BYTES, ST_MAX_GAP_NS, ST_OPEN_ERR,
+    ST_PARTIAL, /* http.c's partial flag from its staging log line; -1: none */
     ST_N
 };
 
-static _Thread_local int64_t read_calls, dbb_wraps;
+static _Thread_local int64_t read_calls, dbb_wraps, partial_flag;
 
 static void log_cb(void *avcl, int level, const char *fmt, va_list vl)
 {
@@ -35,8 +37,18 @@ static void log_cb(void *avcl, int level, const char *fmt, va_list vl)
         return;
     if (!strncmp(fmt, "okhttp_read: size=", 18))
         read_calls++;
-    else if (!strncmp(fmt, "okhttp_read: creating", 21))
+    else if (!strncmp(fmt, "okhttp_read: creating", 21)) {
         dbb_wraps++;
+        /* "...staging DirectByteBuffer size=%d partial=%d": which Java read
+         * method http.c chose, so a row can't silently measure the fallback. */
+        if (strstr(fmt, "partial=%d")) {
+            va_list ap;
+            va_copy(ap, vl);
+            (void)va_arg(ap, int);
+            partial_flag = va_arg(ap, int);
+            va_end(ap);
+        }
+    }
     else if (level <= AV_LOG_ERROR)
         av_log_default_callback(avcl, level, fmt, vl);
 }
@@ -66,6 +78,7 @@ JNIEXPORT jlongArray JNICALL Java_Bench_run(JNIEnv *env, jclass cls, jstring jur
     int64_t t0, cpu0, last, deadline, got = 0, bad = 0;
 
     read_calls = dbb_wraps = 0;
+    partial_flag = -1;
     st[ST_NS_FIRST_2K] = st[ST_NS_FIRST_32K] = -1;
     t0 = now_ns(CLOCK_MONOTONIC);
     cpu0 = now_ns(CLOCK_THREAD_CPUTIME_ID);
@@ -104,6 +117,7 @@ end:
     st[ST_BAD_BYTES] = bad;
     st[ST_READ_CALLS] = read_calls;
     st[ST_DBB_WRAPS] = dbb_wraps;
+    st[ST_PARTIAL] = partial_flag;
     avio_closep(&pb);
     av_free(buf);
     (*env)->ReleaseStringUTFChars(env, jurl, url);

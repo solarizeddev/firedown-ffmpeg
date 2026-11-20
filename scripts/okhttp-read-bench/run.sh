@@ -173,4 +173,6 @@ for row in $ROWS; do
       2>"$OUT/err.txt" >>"$RES" || { cat "$OUT/err.txt" >&2; exit 1; }
   done
 done
-python3 -I "$HERE/summarize.py" "$RES" "$MOBILE_SIZE" "$FAST_SIZE"
+# shellcheck disable=SC2046
+python3 -I "$HERE/summarize.py" "$RES" "$MOBILE_SIZE" "$FAST_SIZE" \
+  "$((REPS_LIVE + 1))" "$((REPS_MOBILE + 1))" "$((REPS_FAST + 1))" $(for r in $ROWS; do echo "$r" | cut -d: -f1,2; done)

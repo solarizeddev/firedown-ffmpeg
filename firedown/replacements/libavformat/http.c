@@ -55,10 +55,11 @@ struct JNIOkhttpFields {
  * protocols from 32 KiB to 256 KiB, 512 KiB when is_streamed, and
  * fill_buffer() asks for all of it). 32 KiB is never more than 9.0.x asked.
  *
- * okhttpReadPartial (newer apps) returns once it holds some bytes and 10 ms
- * have passed, the way a socket read returns what has arrived, so it can be
- * given 9.1's full 256 KiB: a fast stream fills it in one JNI call, a slow one
- * still returns in a fraction of a second.
+ * okhttpReadPartial (newer apps) stops filling at its first okio read that
+ * ends 10 ms or more into the call. It can still wait for one more arrival
+ * while holding bytes (see its javadoc), but never for a whole request, so it
+ * can be given 9.1's full 256 KiB: a fast stream fills most of it per JNI
+ * call, a slow one still returns in a fraction of a second.
  *
  * Measured by scripts/okhttp-read-bench (real avio + this file + the app's
  * FFmpegOkhttp + OkHttp): first 2 KiB of a 128 kbit/s live stream 2.0 s with
@@ -95,8 +96,9 @@ typedef struct {
      * context owns, sized for the largest request it will make, so the
      * wrapper is created once and is always valid.
      *
-     * Cost: one memcpy per read (lost in the noise of the JNI call in the
-     * bench) and stage_size bytes of native memory per open context —
+     * Cost: one memcpy per read — at loopback speed about 0.3 ms of CPU per
+     * MiB in one bench run and nothing measurable in another, nothing a real
+     * network shows — and the staging bytes of native memory per open context —
      * FIREDOWN_OKHTTP_MAX_READ (32 KiB) for an older app,
      * FIREDOWN_OKHTTP_PARTIAL_MAX_READ (256 KiB) with okhttpReadPartial —
      * freed by okhttp_close. The open failure path never holds one: it is
@@ -106,7 +108,6 @@ typedef struct {
      * byteBuffer.capacity(); keep it that way on both sides of the bridge. */
     jobject stage_ref;
     unsigned char *stage;
-    int stage_size;
 } OkhttpContext;
 
 #define OFFSET(x) offsetof(struct JNIOkhttpFields, x)
@@ -116,8 +117,7 @@ static const struct FFJniField jfields_okhttp_mapping[] = {
     { "com/solarized/firedown/ffmpegutils/FFmpegOkhttp", "okhttpOpen", "(Ljava/util/Map;)I", FF_JNI_METHOD, OFFSET(okhttp_open_method), 1 },
     { "com/solarized/firedown/ffmpegutils/FFmpegOkhttp", "okhttpRead", "(Ljava/nio/ByteBuffer;I)I", FF_JNI_METHOD, OFFSET(okhttp_read_method), 1 },
     /* Optional (mandatory 0): absent on apps built before it existed, and then
-     * NULL, with the NoSuchMethodError cleared. Keep it off the END of this
-     * table: ff_jni_init_jfields returns the status of the last entry. */
+     * NULL, with the NoSuchMethodError cleared and init still returning 0. */
     { "com/solarized/firedown/ffmpegutils/FFmpegOkhttp", "okhttpReadPartial", "(Ljava/nio/ByteBuffer;I)I", FF_JNI_METHOD, OFFSET(okhttp_read_partial_method), 0 },
     { "com/solarized/firedown/ffmpegutils/FFmpegOkhttp", "okhttpSeek", "(JI)J", FF_JNI_METHOD, OFFSET(okhttp_seek_method), 1 },
     { "com/solarized/firedown/ffmpegutils/FFmpegOkhttp", "okhttpClose", "()V", FF_JNI_METHOD, OFFSET(okhttp_close_method), 1 },
@@ -236,7 +236,6 @@ static int okhttp_close(URLContext *h)
     c->thiz = NULL;
     c->stage_ref = NULL;
     av_freep(&c->stage);
-    c->stage_size = 0;
 
     // FIX #3: free mime_type string
     av_freep(&c->mime_type);
@@ -487,7 +486,6 @@ static int okhttp_read(URLContext *h, unsigned char *buf, int size)
             av_freep(&c->stage);
             return AVERROR(ENOMEM);
         }
-        c->stage_size = max_read;
     }
 
     int bytes_read = (*env)->CallIntMethod(env, c->thiz,
