@@ -1,20 +1,33 @@
 #!/usr/bin/env bash
-# Run the okhttp read-stats comparison on a real Android device, end to end:
-# put both repos on the right branches, build arm64 libraries, copy them into
-# the app, install a debug build, turn the stats on, capture each workload
-# while you run it in the app, summarize, and put everything back.
+# Run the okhttp read-stats comparison on a real Android device, end to end
+# and unattended: put both repos on the right branches, build arm64 libraries,
+# copy them into the app, install a debug build, turn the stats on, download
+# each workload through the app's FFmpeg path, capture the stats, summarize,
+# and put everything back.
 #
 #   scripts/okhttp-read-bench/device-run.sh [options] [path to the firedown app repo]
 #
 # The app repo defaults to $FIREDOWN, then a "firedown" checkout beside this
-# repo. The only manual part is starting each download in the app: the script
-# says which, and stops capturing when you press Enter or when no new stats
-# line has arrived for --idle seconds (after at least one).
+# repo. Downloads are started by the debug app's ReadBenchReceiver (adb
+# broadcast), always through FFmpeg; a run ends --idle seconds after the last
+# connection closed (or on Enter), or fails after --timeout seconds with no
+# connection at all. The files land in the app's downloads as okread-*.mp4;
+# delete them there afterwards.
+#
+# Workloads (the URLs are checked from this machine before anything starts;
+# override any with the options below):
+#   file     a large progressive video file
+#   hls      an HLS VOD stream with many segments
+#   aes-hls  an AES-128 encrypted HLS stream (reads arrive in 4 KiB pieces)
 #
 # Options:
 #   --reps N          runs per workload (default 3)
-#   --workloads LIST  comma-separated (default wifi-file,hls,aes-hls,radio)
-#   --idle S          auto-stop after S quiet seconds (default 45; 0: Enter only)
+#   --workloads LIST  comma-separated (default file,hls,aes-hls)
+#   --file-url URL / --hls-url URL / --aes-url URL   replace a default URL
+#   --idle S          end a run S seconds after the last stats line (default 20)
+#   --timeout S       give up on a run with no stats line after S seconds (default 900)
+#   --manual          start each download yourself in the app (any workload
+#                     name; the script only captures)
 #   --no-switch       leave both repos on their current branches
 #   --no-build        reuse output/ from a previous build
 #   --no-install      do not build/install the app (it must already be the debug build)
@@ -39,8 +52,15 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 FF=$(cd "$HERE/../.." && pwd)
 
 REPS=3
-WORKLOADS=wifi-file,hls,aes-hls,radio
-IDLE=45
+WORKLOADS=file,hls,aes-hls
+IDLE=20
+TIMEOUT=900
+MANUAL=0
+# Public test media. Not every host is reachable from every network: the URLs
+# are checked before the run; replace any with --file-url/--hls-url/--aes-url.
+FILE_URL=https://download.blender.org/peach/bigbuckbunny_movies/BigBuckBunny_640x360.m4v
+HLS_URL=https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8
+AES_URL=https://cdn.theoplayer.com/video/big_buck_bunny_encrypted/stream-800/index.m3u8
 SWITCH=1 BUILD=1 INSTALL=1 KEEP_LIBS=0
 OUT=""
 APP=""
@@ -49,6 +69,11 @@ while [[ $# -gt 0 ]]; do
     --reps) REPS=$2; shift 2 ;;
     --workloads) WORKLOADS=$2; shift 2 ;;
     --idle) IDLE=$2; shift 2 ;;
+    --timeout) TIMEOUT=$2; shift 2 ;;
+    --manual) MANUAL=1; shift ;;
+    --file-url) FILE_URL=$2; shift 2 ;;
+    --hls-url) HLS_URL=$2; shift 2 ;;
+    --aes-url) AES_URL=$2; shift 2 ;;
     --no-switch) SWITCH=0; shift ;;
     --no-build) BUILD=0; shift ;;
     --no-install) INSTALL=0; shift ;;
@@ -68,7 +93,28 @@ OUT=${OUT:-$HOME/okread-$(date +%Y%m%d-%H%M%S)}
 say() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 die() { echo "ERROR: $*" >&2; exit 1; }
 
-for t in git python3 adb; do command -v "$t" >/dev/null || die "$t not found in PATH"; done
+for t in git python3 adb curl; do command -v "$t" >/dev/null || die "$t not found in PATH"; done
+
+workload_url() {
+  case $1 in
+    file) echo "$FILE_URL" ;;
+    hls) echo "$HLS_URL" ;;
+    aes-hls) echo "$AES_URL" ;;
+    *) echo "" ;;
+  esac
+}
+IFS=, read -r -a WL <<<"$WORKLOADS"
+if [[ $MANUAL = 0 ]]; then
+  say "Checking the test URLs from this machine"
+  for w in "${WL[@]}"; do
+    url=$(workload_url "$w")
+    [[ -n $url ]] || die "no URL for workload '$w' (use file, hls, aes-hls, or --manual)"
+    code=$(curl -sS -L -o /dev/null -r 0-1 --max-time 20 -w '%{http_code}' "$url" 2>/dev/null || true)
+    [[ $code == 200 || $code == 206 ]] || \
+      die "$w: $url answered '${code:-no response}'; pass another with --${w%-hls}-url, or drop it with --workloads"
+    echo "  $w: ok ($url)"
+  done
+fi
 
 # --- cleanup, whatever happens from here on ---------------------------------------
 LOGCAT_PID=""
@@ -163,20 +209,42 @@ echo "captures go to $OUT"
 # --- 6. workloads ------------------------------------------------------------------
 describe() {
   case $1 in
-    wifi-file) echo "download a LARGE HTTPS file (a direct video file, 100 MB or more) over Wi-Fi" ;;
-    hls)       echo "download an HLS video with many segments (any normal streaming site)" ;;
-    aes-hls)   echo "download an AES-128 encrypted HLS video (for example Niconico)" ;;
-    radio)     echo "start a live radio / ICY stream, let it run about 30 s, then STOP it in the app" ;;
-    *)         echo "run the '$1' workload" ;;
+    file)    echo "download a LARGE direct video file (100 MB or more) over Wi-Fi" ;;
+    hls)     echo "download an HLS video with many segments" ;;
+    aes-hls) echo "download an AES-128 encrypted HLS video (for example Niconico)" ;;
+    *)       echo "run the '$1' workload" ;;
   esac
 }
+start_download() { # workload run; queues the download through ReadBenchReceiver
+  local url answer
+  url=$(workload_url "$1")
+  [[ $url != *"'"* ]] || { echo "  URL contains a single quote: $url" >&2; return 1; }
+  # The download service only starts for an app in the foreground (Android 8+).
+  adb shell input keyevent KEYCODE_WAKEUP >/dev/null 2>&1 || true
+  adb shell am start -W -n "$PACKAGE/.phone.BrowserActivity" >/dev/null 2>&1 || true
+  sleep 2
+  answer=$(adb shell am broadcast -n "$PACKAGE/.readbench.ReadBenchReceiver" \
+    -a com.solarized.firedown.readbench.DOWNLOAD \
+    --es url "'$url'" --es name "okread-$1-$2.mp4" | tr -d '\r')
+  if [[ $answer != *"result=1"* ]]; then
+    echo "  the app refused the download: $answer" >&2
+    return 1
+  fi
+  echo "  queued okread-$1-$2.mp4"
+}
 CAPTURED=0
-capture() { # file; sets CAPTURED to the number of okhttp-stats lines
-  local file=$1 last_count=0 last_change now count
+capture() { # file [workload run]; sets CAPTURED to the number of okhttp-stats lines
+  local file=$1 last_count=0 last_change start now count
   adb logcat -c
   adb logcat -s ffmpeg >"$file" 2>/dev/null &
   LOGCAT_PID=$!
-  last_change=$(date +%s)
+  if [[ $# -gt 1 ]] && ! start_download "$2" "$3"; then
+    kill "$LOGCAT_PID" 2>/dev/null || true
+    wait "$LOGCAT_PID" 2>/dev/null || true
+    LOGCAT_PID="" CAPTURED=0
+    return
+  fi
+  start=$(date +%s) last_change=$start
   while :; do
     if read -r -t 2 _; then break; fi
     count=$(grep -c 'okhttp-stats:' "$file" 2>/dev/null || true)
@@ -185,7 +253,10 @@ capture() { # file; sets CAPTURED to the number of okhttp-stats lines
       last_count=$count last_change=$now
       printf '\r  %d connection(s) logged so far ' "$count"
     elif [[ $IDLE -gt 0 && $count -gt 0 && $((now - last_change)) -ge $IDLE ]]; then
-      printf '\n  no new stats for %ss, stopping\n' "$IDLE"
+      printf '\n  no new stats for %ss, run done\n' "$IDLE"
+      break
+    elif [[ $MANUAL = 0 && $count -eq 0 && $((now - start)) -ge $TIMEOUT ]]; then
+      printf '\n  nothing logged in %ss, giving up on this run\n' "$TIMEOUT"
       break
     fi
   done
@@ -194,15 +265,19 @@ capture() { # file; sets CAPTURED to the number of okhttp-stats lines
   LOGCAT_PID=""
   CAPTURED=$(grep -c 'okhttp-stats:' "$file" || true)
 }
-IFS=, read -r -a WL <<<"$WORKLOADS"
 for w in "${WL[@]}"; do
   for ((i = 1; i <= REPS; i++)); do
     while :; do
       file="$OUT/$w-$i.txt"
       say "$w, run $i of $REPS"
-      echo "In the app: $(describe "$w")."
-      echo "Capturing now. Press Enter when it has finished$([[ $IDLE -gt 0 ]] && echo ", or wait: it stops ${IDLE}s after the last connection closes")."
-      capture "$file"
+      if [[ $MANUAL = 1 ]]; then
+        echo "In the app: $(describe "$w")."
+        echo "Capturing now. Press Enter when it has finished$([[ $IDLE -gt 0 ]] && echo ", or wait: it stops ${IDLE}s after the last connection closes")."
+        capture "$file"
+      else
+        echo "Downloading $(workload_url "$w") through the app (Enter ends the run early)."
+        capture "$file" "$w" "$i"
+      fi
       if [[ $CAPTURED -gt 0 ]]; then
         echo "  saved $file ($CAPTURED connections)"
         break

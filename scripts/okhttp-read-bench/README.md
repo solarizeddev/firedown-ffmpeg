@@ -159,9 +159,8 @@ The same stats line the benchmark parses is printed to logcat by a debug build
 of the app, one line per closed connection (a whole file download, or one
 HLS/DASH segment, key or playlist).
 
-**The short way:** one script does all of the steps below except tapping the
-downloads, which it prompts for, and then restores the device and the app's
-libraries:
+**The short way:** one script runs the whole comparison unattended, then
+restores the device and the app's libraries:
 
 ```
 scripts/okhttp-read-bench/device-run.sh ~/path/to/firedown
@@ -169,12 +168,19 @@ scripts/okhttp-read-bench/device-run.sh ~/path/to/firedown
 
 It switches both repos to the measurement branches (refusing if either has
 uncommitted changes), builds arm64 libraries, copies them into the app,
-installs the debug build, turns the stats on, and captures each workload
-(wifi-file, hls, aes-hls, radio; three runs each). A capture stops when you
-press Enter, or 45 s after the last connection closed. Then it prints the
-summary and saves it with the captures in `~/okread-<date>-<time>`. Run it
-with `--help` for options (`--reps`, `--workloads`, `--no-build`,
-`--no-install`, `--keep-libs`). The build needs `ANDROID_SDK_HOME` and
+installs the debug build and turns the stats on. Then it downloads each
+workload three times through the app's FFmpeg path: a large video file, an
+HLS stream and an AES-128 HLS stream. The downloads are started by the debug
+app's `ReadBenchReceiver` over `adb`, so no taps are needed. A run ends 20 s
+after its last connection closed. The summary is printed and saved with the
+captures in `~/okread-<date>-<time>`; the downloaded files are in the app as
+`okread-*.mp4`.
+
+The test URLs are public media, checked from your machine before anything
+starts; replace any with `--file-url`, `--hls-url` or `--aes-url`. Other
+options: `--reps`, `--workloads`, `--manual` (start each download yourself,
+for site-specific streams such as Niconico), `--no-build`, `--no-install`,
+`--keep-libs`; `--help` lists them all. The build needs `ANDROID_SDK_HOME` and
 `ANDROID_NDK_HOME`; the script uses yours if exported, else `~/Android/Sdk`
 and its newest NDK.
 
