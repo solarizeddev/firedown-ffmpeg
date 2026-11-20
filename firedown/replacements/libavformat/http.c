@@ -45,6 +45,11 @@ struct JNIOkhttpFields {
     jmethodID bbuf_allocate_method;
 };
 
+/* 9.1's largest AVIO buffer (512 KiB, streamed) / FIREDOWN_OKHTTP_MAX_READ
+ * (32 KiB): the number of distinct addresses fill_buffer() cycles through.
+ * See the buf_slots note in OkhttpContext. */
+#define FIREDOWN_OKHTTP_BUF_SLOTS 16
+
 typedef struct {
     const AVClass *class;
     char *headers;
@@ -52,42 +57,52 @@ typedef struct {
     struct JNIOkhttpFields jfields;
     jobject thiz;
 
-    /* [OOM FIX] Cached DirectByteBuffer — reused across okhttp_read calls
-     * instead of allocating a new one per call.
+    /* [OOM FIX] Cached DirectByteBuffers — reused across okhttp_read calls
+     * instead of allocating one per call. A small table keyed by the
+     * buffer address, not a single entry, and the reason is FFmpeg 9.1.
      *
-     * The original note here claimed "for a given URLContext the buf pointer
-     * and size are constant (FFmpeg allocates the protocol buffer once)".
-     * That is NOT true, and the difference is what makes the invalidation
-     * check below load-bearing rather than belt-and-braces. ffmpeg reaches
-     * url_read by two paths (libavformat/aviobuf.c, 8.1.2):
+     * ffmpeg reaches url_read by two paths (libavformat/aviobuf.c, 9.1):
      *
-     *  - BUFFERED (fill_buffer, ~line 514): reads into the AVIO buffer, at
-     *    most IO_BUFFER_SIZE (32768) bytes. dst is s->buffer in all but the
-     *    buffer-empty-at-offset-0 case, so the pointer IS effectively stable
-     *    here and the cache hits. This is the path the cache was written for.
+     *  - BUFFERED (fill_buffer, ~line 514): reads into the AVIO buffer. 9.1
+     *    sizes that buffer NETWORK_IO_BUFFER_SIZE (262144, doubled when
+     *    is_streamed) for any URL_PROTOCOL_FLAG_NETWORK protocol, ours
+     *    included; through 9.0.x it was IO_BUFFER_SIZE (32768, doubled when
+     *    is_streamed). fill_buffer() appends at buf_end while another 32 KiB
+     *    fits and wraps to the buffer start otherwise, and okhttp_read
+     *    clamps every request to FIREDOWN_OKHTTP_MAX_READ (32 KiB, see
+     *    there). So dst WALKS through buffer_size / 32 KiB addresses — 8, or
+     *    16 when streamed — and wraps. With one cache entry every buffered
+     *    read missed (measured: 1601 misses in 1601 reads of a 50 MB body);
+     *    with FIREDOWN_OKHTTP_BUF_SLOTS entries keyed by address the whole
+     *    cycle stays cached and each address is wrapped once per context.
+     *    (On 9.0.x dst was always the buffer start and one entry sufficed.)
      *
      *  - DIRECT (avio_read, ~line 623): when size > s->buffer_size — or with
      *    AVIO_FLAG_DIRECT — ffmpeg BYPASSES its buffer and hands read_packet
      *    the CALLER's buffer, then advances `buf += len` inside its own loop.
-     *    So the pointer differs per call and often per iteration. mov's
-     *    av_get_packet reads a whole packet this way and a video keyframe is
-     *    routinely over 32 KB, so this path is common, not exotic. Every one
-     *    of these reads is a cache MISS, costing a DeleteGlobalRef +
-     *    NewGlobalRef + DeleteLocalRef more than the uncached form. The cache
-     *    is still a net win overall — just not the unconditional one the old
-     *    comment implied.
+     *    So the pointer differs per call. On 9.1 that only happens for reads
+     *    over 256/512 KiB, so it is rare; each one evicts the oldest slot.
      *
-     * The DIRECT path also creates a use-after-free shape worth naming: the
-     * cached ref can outlive the allocation it wrapped (a packet buffer that
-     * has since been freed), and a later malloc can land on the SAME address
-     * with a SMALLER size while cached_buf_size still holds the old, larger
+     * A short return (end of body) also moves dst off the 32 KiB grid; that
+     * costs one extra wrap, and the stale slot ages out.
+     *
+     * The DIRECT path (and an ffio_set_buf_size() realloc) also creates a
+     * use-after-free shape worth naming: a cached ref can outlive the
+     * allocation it wrapped, and a later malloc can land on the SAME address
+     * with a SMALLER size while the slot's size still holds the old, larger
      * capacity — so the entry is reused over a shorter allocation. That is
      * safe for exactly one reason: FFmpegOkhttp.okhttpRead bounds its write
      * by the `size` argument and NEVER by byteBuffer.capacity(). Do not
-     * "simplify" that on either side of the bridge. */
-    jobject cached_buf;
-    unsigned char *cached_buf_ptr;
-    int cached_buf_size;
+     * "simplify" that on either side of the bridge.
+     *
+     * Every slot holds a GLOBAL ref; okhttp_close releases them all (the
+     * open failure path never has any: slots are only filled by reads). */
+    struct OkhttpBufSlot {
+        jobject ref;
+        unsigned char *ptr;
+        int size;
+    } buf_slots[FIREDOWN_OKHTTP_BUF_SLOTS];
+    int buf_slot_next; /* FIFO eviction cursor once every slot is in use */
 } OkhttpContext;
 
 #define OFFSET(x) offsetof(struct JNIOkhttpFields, x)
@@ -194,11 +209,13 @@ static int okhttp_close(URLContext *h)
             (*env)->DeleteGlobalRef(env, c->thiz);
         }
 
-        /* [OOM FIX] Free cached DirectByteBuffer */
-        if (c->cached_buf) {
-            (*env)->DeleteGlobalRef(env, c->cached_buf);
-            av_log(h, AV_LOG_TRACE, "okhttp_close: freed cached DirectByteBuffer\n");
+        /* [OOM FIX] Free every cached DirectByteBuffer */
+        for (int i = 0; i < FIREDOWN_OKHTTP_BUF_SLOTS; i++) {
+            if (c->buf_slots[i].ref) {
+                (*env)->DeleteGlobalRef(env, c->buf_slots[i].ref);
+            }
         }
+        av_log(h, AV_LOG_TRACE, "okhttp_close: freed cached DirectByteBuffers\n");
 
         ff_jni_reset_jfields(env, &c->jfields, jfields_okhttp_mapping, 1, h);
     } else {
@@ -211,9 +228,8 @@ static int okhttp_close(URLContext *h)
     }
 
     c->thiz = NULL;
-    c->cached_buf = NULL;
-    c->cached_buf_ptr = NULL;
-    c->cached_buf_size = 0;
+    memset(c->buf_slots, 0, sizeof(c->buf_slots));
+    c->buf_slot_next = 0;
 
     // FIX #3: free mime_type string
     av_freep(&c->mime_type);
@@ -413,6 +429,19 @@ done:
     return ret;
 }
 
+/* Upper bound on ONE okhttp_read request. FFmpegOkhttp.okhttpRead does not
+ * return until it has filled `size` bytes or hit end of body, so `size` IS the
+ * read latency on a slow stream: a 128 kbit/s live radio stream takes ~2 s to
+ * fill 32 KiB but ~33 s to fill 512 KiB. FFmpeg 9.1 grew the AVIO buffer of
+ * network protocols from 32 KiB to 256 KiB (512 KiB when is_streamed), and
+ * fill_buffer() asks for all of it, so without this clamp every read of a
+ * slow live/ICY stream would stall for the whole buffer (probing included).
+ * 9.0.x asked for 32 KiB (64 KiB on an unknown-length stream), so this is
+ * never slower than 9.0.x. A short read is always legal here: fill_buffer()
+ * takes what it gets, and avio_read() loops for the rest. The clamp makes
+ * fill_buffer()'s dst walk through the buffer — see buf_slots. */
+#define FIREDOWN_OKHTTP_MAX_READ 32768
+
 static int okhttp_read(URLContext *h, unsigned char *buf, int size)
 {
     OkhttpContext *c = h->priv_data;
@@ -431,39 +460,70 @@ static int okhttp_read(URLContext *h, unsigned char *buf, int size)
         return AVERROR(EIO);
     }
 
+    if (size > FIREDOWN_OKHTTP_MAX_READ)
+        size = FIREDOWN_OKHTTP_MAX_READ;
+
     /* [OOM FIX] Reuse a cached DirectByteBuffer instead of allocating one
      * per read call. The old approach created thousands of DirectByteBuffer
      * objects during HLS segment downloads, overwhelming the GC's Cleaner
      * thread and causing OOM under concurrent downloads.
      *
-     * For a given URLContext, FFmpeg passes the same buf pointer and size
-     * on every okhttp_read call, so we only need to create the wrapper once. */
-    if (c->cached_buf == NULL || c->cached_buf_ptr != buf || c->cached_buf_size < size) {
-        if (c->cached_buf != NULL) {
-            (*env)->DeleteGlobalRef(env, c->cached_buf);
-            c->cached_buf = NULL;
+     * One wrapper per buffer ADDRESS: fill_buffer()'s dst cycles through a
+     * fixed set of addresses on 9.1 (see buf_slots in OkhttpContext), so
+     * after the first lap every buffered read is a hit. */
+    struct OkhttpBufSlot *slot = NULL;
+    for (int i = 0; i < FIREDOWN_OKHTTP_BUF_SLOTS; i++) {
+        if (c->buf_slots[i].ref && c->buf_slots[i].ptr == buf) {
+            slot = &c->buf_slots[i];
+            break;
         }
+    }
+    if (slot && slot->size < size) {
+        /* Same address, larger request: re-wrap in place. */
+        (*env)->DeleteGlobalRef(env, slot->ref);
+        slot->ref = NULL;
+    }
+    if (!slot) {
+        for (int i = 0; i < FIREDOWN_OKHTTP_BUF_SLOTS; i++) {
+            if (!c->buf_slots[i].ref) {
+                slot = &c->buf_slots[i];
+                break;
+            }
+        }
+    }
+    if (!slot) {
+        slot = &c->buf_slots[c->buf_slot_next];
+        c->buf_slot_next = (c->buf_slot_next + 1) % FIREDOWN_OKHTTP_BUF_SLOTS;
+        (*env)->DeleteGlobalRef(env, slot->ref);
+        slot->ref = NULL;
+    }
+
+    if (!slot->ref) {
+        slot->ptr = NULL;
+        slot->size = 0;
 
         av_log(h, AV_LOG_VERBOSE, "okhttp_read: creating cached DirectByteBuffer size=%d\n", size);
 
         jobject local_buf = (*env)->NewDirectByteBuffer(env, buf, size);
         if (!local_buf) {
             av_log(h, AV_LOG_ERROR, "okhttp_read: NewDirectByteBuffer failed\n");
+            ff_jni_exception_check(env, 1, h);
             return AVERROR(ENOMEM);
         }
-        c->cached_buf = (*env)->NewGlobalRef(env, local_buf);
+        slot->ref = (*env)->NewGlobalRef(env, local_buf);
         (*env)->DeleteLocalRef(env, local_buf);
 
-        if (!c->cached_buf) {
+        if (!slot->ref) {
             av_log(h, AV_LOG_ERROR, "okhttp_read: NewGlobalRef failed\n");
+            ff_jni_exception_check(env, 1, h);
             return AVERROR(ENOMEM);
         }
 
-        c->cached_buf_ptr = buf;
-        c->cached_buf_size = size;
+        slot->ptr = buf;
+        slot->size = size;
     }
 
-    int bytes_read = (*env)->CallIntMethod(env, c->thiz, c->jfields.okhttp_read_method, c->cached_buf, size);
+    int bytes_read = (*env)->CallIntMethod(env, c->thiz, c->jfields.okhttp_read_method, slot->ref, size);
 
 #ifdef PROFILING
     // End timer

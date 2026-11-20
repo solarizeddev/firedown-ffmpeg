@@ -9,7 +9,7 @@
 # Run this whenever you bump FFmpeg versions in the build, to regenerate
 # the patch against the new upstream hls.c.
 #
-# What the patch does to hls.c (FFmpeg 9.1 shape; 9.0.x is still accepted):
+# What the patch does to hls.c (FFmpeg 9.1+ only — see the 9.0.x note below):
 #   1. open_url(): the open_url_keepalive() branch goes, every open is a
 #      plain s->io_open(). Vanilla 9.1's av_assert0(!*pb) on that path is
 #      kept — see 3 for why it holds.
@@ -28,6 +28,14 @@
 #      http.c replacement does not define.
 # Any of these that the source calls for but the script cannot perform is a
 # hard error — a half-done patch is exactly the leak/assert described in 3.
+#
+# 9.0.x is REFUSED. It has no is_native_http(): its read_data_continuous
+# keeps a finished segment's input open (input_read_done) whenever
+# http_persistent is set, so 1-2 alone overwrite that input in io_open()
+# and leak it, and there is no single place to stub. The app happens to pass
+# http_persistent=0 everywhere, which is the only reason 9.0.x builds were
+# fine; a generator must not depend on that. To build an older FFmpeg, use
+# the generator and patch from that version's commit.
 #
 # Usage:
 #   ./generate-hls-patch.sh <path-to-vanilla-ffmpeg-source>
@@ -62,10 +70,10 @@ if 'FIREDOWN-HLS-PATCHED' in src:
 failed = []
 
 # Transformation 1: replace the keepalive branch in open_url() with a direct
-# s->io_open call. 9.0.x tests `*pb`, 9.1 tests `is_native_http(*pb)` and
-# asserts !*pb on the plain path; the assert is re-emitted when present.
+# s->io_open call. 9.1 tests `is_native_http(*pb)` and asserts !*pb on the
+# plain path; the assert is kept.
 pattern1 = re.compile(
-    r'    if \(is_http && c->http_persistent && (?:\*pb|is_native_http\(\*pb\))\) \{\n'
+    r'    if \(is_http && c->http_persistent && is_native_http\(\*pb\)\) \{\n'
     r'        ret = open_url_keepalive\(c->ctx, pb, url, &tmp\);\n'
     r'        if \(ret == AVERROR_EXIT\) \{\n'
     r'            av_dict_free\(&tmp\);\n'
@@ -119,8 +127,8 @@ new_src, n2 = pattern2.subn('', new_src)
 if n2 != 1:
     failed.append(f"playlist_pb keepalive block matched {n2} times (expected 1)")
 
-# Transformation 3 (FFmpeg 9.1+): is_native_http() always 0, so no finished
-# input is ever kept open for reuse. Absent in 9.0.x, where it is a no-op.
+# Transformation 3: is_native_http() always 0, so no finished input is ever
+# kept open for reuse.
 pattern3 = re.compile(
     r'static int is_native_http\(AVIOContext \*pb\)\n'
     r'\{\n'
@@ -148,11 +156,11 @@ replacement3 = (
 )
 
 new_src, n3 = pattern3.subn(replacement3, new_src)
-has_native_http = 'is_native_http(' in src
-if has_native_http and n3 != 1:
-    failed.append(f"is_native_http() body matched {n3} times (expected 1; the source uses it)")
-if not has_native_http and n3 != 0:
-    failed.append("is_native_http() matched although the source never calls it")
+if 'is_native_http(' not in src:
+    failed.append("hls.c has no is_native_http(): this is a pre-9.1 FFmpeg, which this "
+                  "generator refuses (see the 9.0.x note at the top of the script)")
+elif n3 != 1:
+    failed.append(f"is_native_http() body matched {n3} times (expected 1)")
 
 # Transformation 4: delete open_url_keepalive() — unused once 1 and 2 are
 # done, and the only reference to ff_http_do_new_request2().
