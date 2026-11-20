@@ -14,8 +14,10 @@
 # connection at all. The files land in the app's downloads as okread-*.mp4;
 # delete them there afterwards.
 #
-# Workloads (the URLs are checked from this machine before anything starts;
-# override any with the options below):
+# Workloads. Each has a short list of public test media; the first that
+# answers from this machine is used (for aes-hls, the first whose playlist
+# really uses AES-128), and a workload with none reachable is skipped with a
+# warning. Override with the options below:
 #   file     a large progressive video file
 #   hls      an HLS VOD stream with many segments
 #   aes-hls  an AES-128 encrypted HLS stream (reads arrive in 4 KiB pieces)
@@ -56,11 +58,19 @@ WORKLOADS=file,hls,aes-hls
 IDLE=20
 TIMEOUT=900
 MANUAL=0
-# Public test media. Not every host is reachable from every network: the URLs
-# are checked before the run; replace any with --file-url/--hls-url/--aes-url.
-FILE_URL=https://download.blender.org/peach/bigbuckbunny_movies/BigBuckBunny_640x360.m4v
-HLS_URL=https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8
-AES_URL=https://cdn.theoplayer.com/video/big_buck_bunny_encrypted/stream-800/index.m3u8
+# Public test media, in order of preference. Hosts move and not every network
+# reaches every host, so the first candidate that answers is used;
+# --file-url/--hls-url/--aes-url replace a list with one URL.
+FILE_URLS="https://download.blender.org/demo/movies/BBB/bbb_sunflower_1080p_30fps_normal.mp4
+https://download.blender.org/peach/bigbuckbunny_movies/big_buck_bunny_720p_h264.mov
+https://download.blender.org/peach/bigbuckbunny_movies/BigBuckBunny_320x180.mp4
+https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/1080/Big_Buck_Bunny_1080_10s_30MB.mp4"
+HLS_URLS="https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8
+https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_fmp4/master.m3u8
+https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.m3u8"
+AES_URLS="https://cdn.theoplayer.com/video/big_buck_bunny_encrypted/stream-800/index.m3u8
+https://playertest.longtailvideo.com/adaptive/oceans_aes/oceans_aes.m3u8"
+FILE_URL="" HLS_URL="" AES_URL=""
 SWITCH=1 BUILD=1 INSTALL=1 KEEP_LIBS=0
 OUT=""
 APP=""
@@ -95,7 +105,7 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 
 for t in git python3 adb curl; do command -v "$t" >/dev/null || die "$t not found in PATH"; done
 
-workload_url() {
+workload_url() { # the URL chosen for a workload (after the check below)
   case $1 in
     file) echo "$FILE_URL" ;;
     hls) echo "$HLS_URL" ;;
@@ -103,17 +113,60 @@ workload_url() {
     *) echo "" ;;
   esac
 }
+reachable() { # url -> 0 if a ranged GET answers 200/206
+  local code
+  code=$(curl -sS -L -o /dev/null -r 0-1 --max-time 20 -w '%{http_code}' "$1" 2>/dev/null || true)
+  [[ $code == 200 || $code == 206 ]]
+}
+is_aes_hls() { # url -> 0 if the playlist (or its first variant) uses AES-128
+  local body variant
+  body=$(curl -sS -L --max-time 20 "$1" 2>/dev/null | head -c 200000) || return 1
+  if grep -q '^#EXT-X-STREAM-INF' <<<"$body"; then
+    variant=$(grep -A1 '^#EXT-X-STREAM-INF' <<<"$body" | grep -v '^#\|^--' | head -1 | tr -d '\r')
+    [[ -n $variant ]] || return 1
+    [[ $variant == http* ]] || variant="${1%/*}/$variant"
+    body=$(curl -sS -L --max-time 20 "$variant" 2>/dev/null | head -c 200000) || return 1
+  fi
+  grep -q '^#EXT-X-KEY:.*METHOD=AES-128' <<<"$body"
+}
+pick_url() { # workload candidates... -> first usable URL, or empty
+  local w=$1 url
+  shift
+  for url in "$@"; do
+    if reachable "$url" && { [[ $w != aes-hls ]] || is_aes_hls "$url"; }; then
+      echo "$url"
+      return
+    fi
+    echo "  $w: $url not usable from here, trying the next" >&2
+  done
+}
 IFS=, read -r -a WL <<<"$WORKLOADS"
 if [[ $MANUAL = 0 ]]; then
-  say "Checking the test URLs from this machine"
+  say "Picking test URLs that answer from this machine"
+  kept=()
   for w in "${WL[@]}"; do
-    url=$(workload_url "$w")
-    [[ -n $url ]] || die "no URL for workload '$w' (use file, hls, aes-hls, or --manual)"
-    code=$(curl -sS -L -o /dev/null -r 0-1 --max-time 20 -w '%{http_code}' "$url" 2>/dev/null || true)
-    [[ $code == 200 || $code == 206 ]] || \
-      die "$w: $url answered '${code:-no response}'; pass another with --${w%-hls}-url, or drop it with --workloads"
-    echo "  $w: ok ($url)"
+    case $w in
+      file) cands=${FILE_URL:-$FILE_URLS} ;;
+      hls) cands=${HLS_URL:-$HLS_URLS} ;;
+      aes-hls) cands=${AES_URL:-$AES_URLS} ;;
+      *) die "no URL for workload '$w' (use file, hls, aes-hls, or --manual)" ;;
+    esac
+    # shellcheck disable=SC2086
+    url=$(pick_url "$w" $cands)
+    if [[ -z $url ]]; then
+      echo "  WARNING: skipping $w: no candidate answered (pass one with --${w%-hls}-url)" >&2
+      continue
+    fi
+    case $w in
+      file) FILE_URL=$url ;;
+      hls) HLS_URL=$url ;;
+      aes-hls) AES_URL=$url ;;
+    esac
+    echo "  $w: $url"
+    kept+=("$w")
   done
+  [[ ${#kept[@]} -gt 0 ]] || die "no workload has a reachable URL; pass them with --file-url / --hls-url / --aes-url"
+  WL=("${kept[@]}")
 fi
 
 # --- cleanup, whatever happens from here on ---------------------------------------

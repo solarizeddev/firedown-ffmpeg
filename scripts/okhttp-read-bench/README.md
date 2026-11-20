@@ -176,8 +176,10 @@ after its last connection closed. The summary is printed and saved with the
 captures in `~/okread-<date>-<time>`; the downloaded files are in the app as
 `okread-*.mp4`.
 
-The test URLs are public media, checked from your machine before anything
-starts; replace any with `--file-url`, `--hls-url` or `--aes-url`. Other
+Each workload has a short list of public test media; the first that answers
+from your machine is used (for AES-128 HLS, the first whose playlist really
+is AES-128), and a workload with none reachable is skipped with a warning.
+Replace a list with one URL with `--file-url`, `--hls-url` or `--aes-url`. Other
 options: `--reps`, `--workloads`, `--manual` (start each download yourself,
 for site-specific streams such as Niconico), `--no-build`, `--no-install`,
 `--keep-libs`; `--help` lists them all. The build needs `ANDROID_SDK_HOME` and
