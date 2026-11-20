@@ -9,9 +9,13 @@
  * == p % 251), and returns the stats below. Two read modes:
  *   - plain url: avio_open2() + avio_read(chunk), i.e. through the AVIO
  *     buffer, as every demuxer reads;
- *   - "urlread:<url>": ffurl_open_whitelist() + ffurl_read(chunk) straight
- *     from the protocol, as crypto.c reads an AES-128 HLS segment (in pieces
- *     of at most 4112 bytes).
+ *   - "urlread:<url>": ffurl_open_whitelist() + ffurl_read() straight from
+ *     the protocol, with crypto.c's exact buffer handling (libavformat/
+ *     crypto.c, crypto_read): reads land in the free tail of a 4112-byte
+ *     buffer until two 16-byte blocks are pending, whole blocks are consumed,
+ *     and the remainder slides down once half the buffer is consumed. So the
+ *     protocol sees the same sizes AND the same moving addresses as for an
+ *     AES-128 HLS segment, minus the decryption. `chunk` is unused there.
  * okhttp_read calls and DirectByteBuffer wraps are counted from http.c's own
  * av_log lines, matched on the FORMAT string (nothing is formatted). The one
  * "okhttp-stats:" line http.c logs at close is formatted and parsed: it is the
@@ -135,24 +139,63 @@ JNIEXPORT jlongArray JNICALL Java_Bench_run(JNIEnv *env, jclass cls, jstring jur
         goto end;
     }
     last = now_ns(CLOCK_MONOTONIC);
-    while (got < max_bytes) {
-        int want = (int)FFMIN((int64_t)chunk, max_bytes - got);
-        int n = url_mode ? ffurl_read(uc, buf, want) : avio_read(pb, buf, want);
-        int64_t t = now_ns(CLOCK_MONOTONIC);
-        if (n <= 0)
-            break;
-        for (int i = 0; i < n; i++)
-            bad += buf[i] != (uint8_t)((got + i) % 251);
-        got += n;
-        if (t - last > st[ST_MAX_GAP_NS] && got > n)  /* gaps after the first read */
-            st[ST_MAX_GAP_NS] = t - last;
-        last = t;
-        if (st[ST_NS_FIRST_2K] < 0 && got >= 2048)
-            st[ST_NS_FIRST_2K] = t - t0;
-        if (st[ST_NS_FIRST_32K] < 0 && got >= 32768)
-            st[ST_NS_FIRST_32K] = t - t0;
-        if (t > deadline)
-            break;
+    if (url_mode) {
+        /* crypto.c's inbuffer: BLOCKSIZE (16) * MAX_BUFFER_BLOCKS (257). */
+        enum { BLK = 16, INBUF = 16 * 257 };
+        uint8_t in[INBUF];
+        int indata = 0, used = 0, eof = 0;
+        while (got < max_bytes && !eof) {
+            while (indata - used < 2 * BLK) {
+                int n = ffurl_read(uc, in + indata, INBUF - indata);
+                if (n <= 0) {
+                    eof = 1;
+                    break;
+                }
+                indata += n;
+            }
+            int consume = eof ? indata - used : (indata - used) / BLK * BLK;
+            if (consume > max_bytes - got)
+                consume = (int)(max_bytes - got);
+            int64_t t = now_ns(CLOCK_MONOTONIC);
+            for (int k = 0; k < consume; k++)
+                bad += in[used + k] != (uint8_t)((got + k) % 251);
+            got += consume;
+            used += consume;
+            if (t - last > st[ST_MAX_GAP_NS] && got > consume)
+                st[ST_MAX_GAP_NS] = t - last;
+            last = t;
+            if (st[ST_NS_FIRST_2K] < 0 && got >= 2048)
+                st[ST_NS_FIRST_2K] = t - t0;
+            if (st[ST_NS_FIRST_32K] < 0 && got >= 32768)
+                st[ST_NS_FIRST_32K] = t - t0;
+            if (used >= INBUF / 2) {
+                memmove(in, in + used, indata - used);
+                indata -= used;
+                used = 0;
+            }
+            if (t > deadline)
+                break;
+        }
+    } else {
+        while (got < max_bytes) {
+            int want = (int)FFMIN((int64_t)chunk, max_bytes - got);
+            int n = avio_read(pb, buf, want);
+            int64_t t = now_ns(CLOCK_MONOTONIC);
+            if (n <= 0)
+                break;
+            for (int k = 0; k < n; k++)
+                bad += buf[k] != (uint8_t)((got + k) % 251);
+            got += n;
+            if (t - last > st[ST_MAX_GAP_NS] && got > n)  /* gaps after the first read */
+                st[ST_MAX_GAP_NS] = t - last;
+            last = t;
+            if (st[ST_NS_FIRST_2K] < 0 && got >= 2048)
+                st[ST_NS_FIRST_2K] = t - t0;
+            if (st[ST_NS_FIRST_32K] < 0 && got >= 32768)
+                st[ST_NS_FIRST_32K] = t - t0;
+            if (t > deadline)
+                break;
+        }
     }
 
 end:
