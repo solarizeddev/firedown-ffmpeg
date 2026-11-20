@@ -81,7 +81,21 @@ outside noise.
 
 The current run measures this design: `current:new` is what ships,
 `current:old` is the new `.so` with an older app, and `new-64k`, `new-2ms`
-and `new-50ms` are its neighbours.
+and `new-50ms` are its neighbours. With `BENCH_BASELINE_REF=origin/master`
+at the time (the slot-table design):
+
+| Row | Live: first 2 KiB | Live: longest gap | Mobile: JNI calls/MiB | Fast: MiB/s | Fast: JNI calls/MiB | Buffers created |
+|---|---|---|---|---|---|---|
+| baseline, older app | 2.04 s | 2.04 s | 32.0 | 369 | 32 | 8 |
+| current, older app | 2.04 s | 2.04 s | 32.0 | 376 | 32 | 1 |
+| **current, new app (ships)** | **0.24 s** | **0.26 s** | **13.2** | **400** | **4** | **1** |
+| current, new app, 64 KiB requests | 0.24 s | 0.26 s | 26.2 | 346 | 16 | 1 |
+| current, new app, 2 ms deadline | 0.24 s | 0.26 s | 13.2 | 417 | 4 | 1 |
+| current, new app, 50 ms deadline | 0.24 s | 0.30 s | 8.8 | 389 | 4 | 1 |
+
+The deadline sits in a flat region: 2 ms gains nothing measurable, 50 ms
+makes fewer calls on a medium-speed stream at the price of slightly longer
+gaps. 64 KiB requests double the calls for no gain.
 
 ## Limits
 
