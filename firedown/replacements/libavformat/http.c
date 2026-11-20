@@ -1,4 +1,5 @@
 #include <jni.h>
+#include <stdint.h>
 #include <string.h>
 #include <inttypes.h> // PRId64 (FFmpeg 9.0 no longer pulls it in transitively)
 #include "libavcodec/ffjni.h"
@@ -10,9 +11,7 @@
 #include "libavutil/attributes.h" // Required for av_used
 #include "url.h"
 
-#ifdef PROFILING
 #include <time.h>
-#endif
 
 // Define error codes to match your Java FFmpegOkhttp class
 #define OKHTTP_AVERROR_OK           0
@@ -71,6 +70,107 @@ struct JNIOkhttpFields {
 #define FIREDOWN_OKHTTP_MAX_READ 32768
 #define FIREDOWN_OKHTTP_PARTIAL_MAX_READ 262144
 
+/* Per-connection read statistics, for comparing read strategies on a real
+ * device (scripts/okhttp-read-bench/README.md, "On a device"). Off unless
+ * av_log's level is AV_LOG_INFO or more verbose when the connection opens:
+ * the app runs at AV_LOG_QUIET and only a debuggable build raises it, from
+ * the debug.firedown.fflog system property. When on, the connection logs
+ * ONE "okhttp-stats:" line at close; the host benchmark parses the same line.
+ *
+ * The shadow_* counters record what two ways of dropping the staging copy
+ * WOULD have done with this connection's real read addresses — they change
+ * nothing, they only count:
+ *  - eq:  one DirectByteBuffer over FFmpeg's buffer, keyed by the exact
+ *         address, reused when a later request starts at that address and
+ *         fits; otherwise re-wrapped;
+ *  - rng: up to FIREDOWN_OKHTTP_SHADOW_RANGES wrappers, each over the whole
+ *         [buf, buf + requested) range FFmpeg offered, reused for any later
+ *         request inside it (Java would be given an offset); FIFO otherwise.
+ * hit_bytes is the data that would have skipped the copy; wraps the
+ * DirectByteBuffers either would have created. */
+#define FIREDOWN_OKHTTP_SHADOW_RANGES 3
+#define FIREDOWN_OKHTTP_HIST_BUCKETS 20 /* floor(log2(bytes)), 1 B .. 512 KiB */
+struct OkhttpStats {
+    int enabled;
+    int64_t reads, bytes, read_wall_ns, read_cpu_ns, copy_ns;
+    int64_t hist[FIREDOWN_OKHTTP_HIST_BUCKETS];
+    const unsigned char *eq_ptr;
+    int eq_size;
+    int64_t eq_hit_bytes, eq_wraps;
+    const unsigned char *rng_ptr[FIREDOWN_OKHTTP_SHADOW_RANGES];
+    int rng_size[FIREDOWN_OKHTTP_SHADOW_RANGES];
+    int rng_used, rng_next;
+    int64_t rng_hit_bytes, rng_wraps;
+};
+
+static int64_t okhttp_clock_ns(clockid_t clk)
+{
+    struct timespec ts;
+    if (clock_gettime(clk, &ts) < 0)
+        return 0;
+    return (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
+}
+
+/* Shadow decisions for one read request; returns a bit mask: 1 eq hit,
+ * 2 rng hit. `requested` is what FFmpeg offered (before the clamp), `size`
+ * what is actually asked of Java. */
+static int okhttp_stats_shadow(struct OkhttpStats *st, const unsigned char *buf,
+                               int requested, int size)
+{
+    int hits = 0;
+
+    if (st->eq_ptr == buf && st->eq_size >= size) {
+        hits |= 1;
+    } else {
+        st->eq_ptr = buf;
+        st->eq_size = size;
+        st->eq_wraps++;
+    }
+
+    for (int i = 0; i < st->rng_used; i++) {
+        /* Integer arithmetic: the pointers may belong to unrelated allocations. */
+        uintptr_t base = (uintptr_t)st->rng_ptr[i], at = (uintptr_t)buf;
+        if (at >= base && at - base <= (uintptr_t)st->rng_size[i] &&
+            (uintptr_t)size <= (uintptr_t)st->rng_size[i] - (at - base)) {
+            hits |= 2;
+            break;
+        }
+    }
+    if (!(hits & 2)) {
+        int slot;
+        if (st->rng_used < FIREDOWN_OKHTTP_SHADOW_RANGES) {
+            slot = st->rng_used++;
+        } else {
+            slot = st->rng_next;
+            st->rng_next = (st->rng_next + 1) % FIREDOWN_OKHTTP_SHADOW_RANGES;
+        }
+        st->rng_ptr[slot] = buf;
+        st->rng_size[slot] = requested;
+        st->rng_wraps++;
+    }
+    return hits;
+}
+
+static void okhttp_stats_log(URLContext *h, const struct OkhttpStats *st, int partial)
+{
+    char hist[FIREDOWN_OKHTTP_HIST_BUCKETS * 24] = "";
+    size_t len = 0;
+
+    for (int i = 0; i < FIREDOWN_OKHTTP_HIST_BUCKETS && len < sizeof(hist); i++) {
+        if (st->hist[i])
+            len += snprintf(hist + len, sizeof(hist) - len, "%s%d:%"PRId64,
+                            len ? "," : "", i, st->hist[i]);
+    }
+    av_log(h, AV_LOG_INFO,
+           "okhttp-stats: partial=%d reads=%"PRId64" bytes=%"PRId64
+           " read_wall_ns=%"PRId64" read_cpu_ns=%"PRId64" copy_ns=%"PRId64
+           " eq_hit_bytes=%"PRId64" eq_wraps=%"PRId64
+           " rng_hit_bytes=%"PRId64" rng_wraps=%"PRId64" hist=%s\n",
+           partial, st->reads, st->bytes, st->read_wall_ns, st->read_cpu_ns, st->copy_ns,
+           st->eq_hit_bytes, st->eq_wraps, st->rng_hit_bytes, st->rng_wraps,
+           len ? hist : "-");
+}
+
 typedef struct {
     const AVClass *class;
     char *headers;
@@ -108,6 +208,8 @@ typedef struct {
      * byteBuffer.capacity(); keep it that way on both sides of the bridge. */
     jobject stage_ref;
     unsigned char *stage;
+
+    struct OkhttpStats stats;
 } OkhttpContext;
 
 #define OFFSET(x) offsetof(struct JNIOkhttpFields, x)
@@ -199,6 +301,9 @@ static int okhttp_close(URLContext *h)
 {
     OkhttpContext *c = h->priv_data;
     JNIEnv *env = ff_jni_get_env(h);
+
+    if (c->stats.enabled)
+        okhttp_stats_log(h, &c->stats, c->jfields.okhttp_read_partial_method != NULL);
 
     av_log(h, AV_LOG_DEBUG, "okhttp_close\n");
 
@@ -299,6 +404,9 @@ static int okhttp_open(URLContext *h, const char *uri, int flags, AVDictionary *
     JNIEnv *env = ff_jni_get_env(h);
     jobject object = NULL, url = NULL, headers = NULL, meta_map = NULL, mime_type = NULL;
     int ret = 0;
+
+    memset(&c->stats, 0, sizeof(c->stats));
+    c->stats.enabled = av_log_get_level() >= AV_LOG_INFO;
 
     av_log(h, AV_LOG_DEBUG, "okhttp_open: %s\n", uri);
 
@@ -458,6 +566,7 @@ static int okhttp_read(URLContext *h, unsigned char *buf, int size)
      * is looked up once, at open), so the staging buffer's size is too. */
     const int partial = c->jfields.okhttp_read_partial_method != NULL;
     const int max_read = partial ? FIREDOWN_OKHTTP_PARTIAL_MAX_READ : FIREDOWN_OKHTTP_MAX_READ;
+    const int requested = size;
     if (size > max_read)
         size = max_read;
 
@@ -486,6 +595,14 @@ static int okhttp_read(URLContext *h, unsigned char *buf, int size)
             av_freep(&c->stage);
             return AVERROR(ENOMEM);
         }
+    }
+
+    int shadow_hits = 0;
+    int64_t t_wall = 0, t_cpu = 0;
+    if (c->stats.enabled) {
+        shadow_hits = okhttp_stats_shadow(&c->stats, buf, requested, size);
+        t_wall = okhttp_clock_ns(CLOCK_MONOTONIC);
+        t_cpu = okhttp_clock_ns(CLOCK_THREAD_CPUTIME_ID);
     }
 
     int bytes_read = (*env)->CallIntMethod(env, c->thiz,
@@ -523,7 +640,27 @@ static int okhttp_read(URLContext *h, unsigned char *buf, int size)
         return AVERROR(EIO);
     }
     if (bytes_read > 0) {
-        memcpy(buf, c->stage, bytes_read);
+        if (c->stats.enabled) {
+            struct OkhttpStats *st = &c->stats;
+            int64_t t_copy = okhttp_clock_ns(CLOCK_MONOTONIC);
+            memcpy(buf, c->stage, bytes_read);
+            int64_t t_end = okhttp_clock_ns(CLOCK_MONOTONIC);
+            int bucket = 0;
+            while (bucket < FIREDOWN_OKHTTP_HIST_BUCKETS - 1 && (bytes_read >> (bucket + 1)))
+                bucket++;
+            st->reads++;
+            st->bytes += bytes_read;
+            st->hist[bucket]++;
+            st->copy_ns += t_end - t_copy;
+            st->read_wall_ns += t_end - t_wall;
+            st->read_cpu_ns += okhttp_clock_ns(CLOCK_THREAD_CPUTIME_ID) - t_cpu;
+            if (shadow_hits & 1)
+                st->eq_hit_bytes += bytes_read;
+            if (shadow_hits & 2)
+                st->rng_hit_bytes += bytes_read;
+        } else {
+            memcpy(buf, c->stage, bytes_read);
+        }
         av_log(h, AV_LOG_TRACE, "okhttp_read: %d bytes\n", bytes_read);
         return bytes_read;
     }

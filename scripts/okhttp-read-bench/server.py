@@ -3,8 +3,9 @@
 
   /file?size=N&rate=R   N bytes with Content-Length, Range supported (206),
                         paced to R bytes/s (R=0: as fast as the socket takes)
-  /live?rate=R          no Content-Length, close-delimited body that never
-                        ends on its own (a live/ICY-style stream), paced to R
+  /live?rate=R[&size=N] no Content-Length, close-delimited body, paced to R:
+                        endless (a live/ICY-style stream), or N bytes (a
+                        chunked-style response of unknown length)
 
 Byte p of every body is p % 251 (a prime period, so an offset or reordering
 error shows up as a mismatch in the reader's check). Prints the bound port to
@@ -68,7 +69,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Type", "audio/mpeg")
                 self.send_header("Connection", "close")
                 self.end_headers()
-                self._send(0, None, rate)
+                self._send(0, int(q["size"]) if "size" in q else None, rate)
                 return
             if u.path != "/file":
                 self.send_error(404)

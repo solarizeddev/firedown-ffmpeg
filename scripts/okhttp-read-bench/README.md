@@ -100,6 +100,72 @@ The deadline sits in a flat region: 2 ms gains nothing measurable, 50 ms
 makes fewer calls on a medium-speed stream at the price of slightly longer
 gaps. 64 KiB requests double the calls for no gain.
 
+## Is the staging copy worth removing?
+
+The staging buffer adds one copy per read: Java fills it, C copies it into
+FFmpeg's buffer. Two copy-free alternatives were considered:
+
+- **eq**: wrap FFmpeg's buffer at the exact address it reads into, and reuse
+  that wrapper while it keeps reading there; otherwise fall back to staging.
+- **rng**: wrap the whole range FFmpeg offers once, and give Java an offset
+  for later reads inside it. That needs a third Java read method.
+
+Rather than build either, `http.c` counts what each WOULD have done with the
+real read addresses (shadow counters; nothing is read differently), next to
+the time the copy actually takes. The decision rule, from the design review:
+keep staging unless the copy exceeds about 1 ms of CPU per MiB, or 3-5% of the
+download thread's CPU, on a real phone with a TLS workload. If it does, build
+**rng**, and only if its counters show at most three wrappers per connection.
+
+## On a device
+
+The same stats line the benchmark parses is printed to logcat by a debug build
+of the app, one line per closed connection (a whole file download, or one
+HLS/DASH segment, key or playlist).
+
+1. Build this repo's libraries and copy them into the app for a local test
+   (not a release): `./ffmpeg-android-maker.sh -dav1d -abis=arm64-v8a`, then the
+   app repo's `scripts/sync-ffmpeg.sh`. Install a **debug** build of the app:
+   only builds without `NDEBUG` honour the property below.
+2. Turn the stats on. FFmpeg's log level is read at the start of each
+   operation, so this applies from the next download:
+   ```
+   adb shell setprop debug.firedown.fflog 32      # AV_LOG_INFO
+   ```
+3. For each workload, clear the log, run it, and save the capture:
+   ```
+   adb logcat -c
+   # ... run one workload in the app ...
+   adb logcat -d -s ffmpeg > wifi-file.txt
+   ```
+   Workloads, each at least three times, phone cool and on a fixed charging
+   state:
+   - a large HTTPS file over Wi-Fi (HTTP/2 from a CDN if possible);
+   - an HLS VOD download with many segments;
+   - an AES-128 HLS download (reads arrive in 4112-byte pieces through
+     FFmpeg's crypto layer);
+   - a live radio or ICY stream for about 30 seconds.
+4. Summarize, with the same measures as the desktop tables:
+   ```
+   python3 scripts/okhttp-read-bench/device-stats.py wifi-file.txt hls.txt aes-hls.txt
+   ```
+5. Turn the stats off again: `adb shell setprop debug.firedown.fflog '""'`.
+
+No A/B build is needed: the copy's cost is measured directly (`copy/MiB`,
+`copy%`), and the shadow counters show what each hybrid would have achieved on
+the same reads. The read-path CPU counts only the thread that calls FFmpeg;
+with HTTP/2, OkHttp's reader thread does the socket and TLS work elsewhere.
+
+For a whole-download CPU picture, profile one download of a debug build with
+the NDK's simpleperf and look at `memcpy` under `okhttp_read` against BoringSSL,
+ART and the demuxer:
+
+```
+python3 $ANDROID_NDK_HOME/simpleperf/app_profiler.py -p com.solarized.firedown \
+    -r "-g --duration 30"
+python3 $ANDROID_NDK_HOME/simpleperf/report_html.py
+```
+
 ## Limits
 
 - HTTP/1.1 over loopback only. HTTP/2 delivers data through OkHttp's reader

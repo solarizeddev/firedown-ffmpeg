@@ -22,9 +22,16 @@
 #                     BENCH_BASELINE_REF is set)
 #
 # Scenarios (HTTP/1.1 over loopback; HTTP/2 is not exercised):
-#   live    128 kbit/s, no Content-Length (is_streamed): probe latency
-#   mobile  16 Mbit/s, 8 MiB file: CPU per MiB, JNI calls, buffer wraps
-#   fast    unthrottled, 256 MiB file: throughput, CPU, JNI calls
+#   live     128 kbit/s, no Content-Length (is_streamed): probe latency
+#   mobile   16 Mbit/s file; m50, m100, m150: 50 / 100 / 150 Mbit/s files
+#   fast     unthrottled file (256 KiB AVIO buffer)
+#   chunked  unthrottled, no Content-Length (512 KiB AVIO buffer)
+#   crypto   unthrottled, ffurl_read(4112) straight from the protocol, as
+#            crypto.c reads an AES-128 HLS segment
+# Each throughput table also shows http.c's okhttp-stats counters: time in the
+# staging copy, and what two copy-free "hybrids" would have done with the same
+# reads (shadow counters only; nothing is read differently). A device prints
+# the same line to logcat: see README.md, "On a device".
 # Every byte is checked against the server's pattern; any mismatch fails.
 #
 # Needs: cc, make, git, curl, python3, a JDK (17+), and network the first
@@ -146,11 +153,32 @@ until [ -s "$OUT/port" ]; do n=$((n + 1)); [ $n -gt 50 ] && { echo "server did n
 BASE="http://127.0.0.1:$(cat "$OUT/port")"
 
 # --- matrix ---------------------------------------------------------------------
-if [ "${BENCH_QUICK:-0}" = 1 ]; then
-  REPS_LIVE=2 REPS_MOBILE=2 REPS_FAST=3 MOBILE_SIZE=2097152 FAST_SIZE=67108864
-else
-  REPS_LIVE=3 REPS_MOBILE=3 REPS_FAST=6 MOBILE_SIZE=8388608 FAST_SIZE=268435456
-fi
+# Scenarios: name | server path (without size) | read chunk | bytes | reps.
+# Reads are avio_read(chunk) through the AVIO buffer, except "crypto", which
+# reads ffurl_read(4112) straight from the protocol the way crypto.c reads an
+# AES-128 HLS segment. Rates are in bytes/s.
+MIB=1048576
+if [ "${BENCH_QUICK:-0}" = 1 ]; then Q=1; else Q=0; fi
+scenario() { # name -> path chunk bytes reps
+  case $1 in
+    live)    echo "/live?rate=16000 4096 65536 $((3 - Q))" ;;
+    mobile)  echo "/file?rate=2000000 16384 $(((8 >> (2 * Q)) * MIB)) $((3 - Q))" ;;
+    m50)     echo "/file?rate=6250000 16384 $(((16 >> (2 * Q)) * MIB)) $((3 - Q))" ;;
+    m100)    echo "/file?rate=12500000 16384 $(((32 >> (2 * Q)) * MIB)) $((3 - Q))" ;;
+    m150)    echo "/file?rate=18750000 16384 $(((32 >> (2 * Q)) * MIB)) $((3 - Q))" ;;
+    fast)    echo "/file?rate=0 16384 $(((256 >> (2 * Q)) * MIB)) $((6 - 3 * Q))" ;;
+    chunked) echo "/live?rate=0 16384 $(((256 >> (2 * Q)) * MIB)) $((6 - 3 * Q))" ;;
+    crypto)  echo "/file?rate=0 4112 $(((64 >> (2 * Q)) * MIB)) $((3 - Q))" ;;
+  esac
+}
+SCENARIOS="live mobile m50 m100 m150 fast chunked crypto"
+SPEC=""
+for sc in $SCENARIOS; do
+  set -- $(scenario "$sc")
+  # +1 rep: the first is JIT warm-up, dropped in the summary
+  SPEC="$SPEC $sc:$3:$(($4 + 1))"
+done
+
 RES="$OUT/results.txt"
 : >"$RES"
 for row in $ROWS; do
@@ -161,18 +189,16 @@ for row in $ROWS; do
   mode=${lab_a%%-*}
   label="$lab_n:$lab_a"
   echo "okread: $label"
-  for sc in live mobile fast; do
-    case $sc in
-      live)   url="$BASE/live?rate=16000"; chunk=4096; max=65536; lim=120000; reps=$REPS_LIVE ;;
-      mobile) url="$BASE/file?size=$MOBILE_SIZE&rate=2000000"; chunk=16384; max=$MOBILE_SIZE; lim=600000; reps=$REPS_MOBILE ;;
-      fast)   url="$BASE/file?size=$FAST_SIZE&rate=0"; chunk=16384; max=$FAST_SIZE; lim=600000; reps=$REPS_FAST ;;
-    esac
-    # one extra rep, dropped in the summary: JIT warm-up
+  for sc in $SCENARIOS; do
+    set -- $(scenario "$sc")
+    path=$1 chunk=$2 max=$3 reps=$4
+    url="$BASE$path&size=$max"
+    [ "$sc" = live ] && url="$BASE$path"          # endless: read 64 KiB of it
+    [ "$sc" = crypto ] && url="urlread:$url"
     "$JAVA_HOME/bin/java" -Xmx512m -Dfd.deadlineMs="$ms" \
-      -cp "$OUT/classes-$mode:$CP" Bench "$OUT/lib$lib.so" "$label $sc" "$url" "$chunk" "$max" "$lim" $((reps + 1)) \
+      -cp "$OUT/classes-$mode:$CP" Bench "$OUT/lib$lib.so" "$label $sc" "$url" "$chunk" "$max" 600000 $((reps + 1)) \
       2>"$OUT/err.txt" >>"$RES" || { cat "$OUT/err.txt" >&2; exit 1; }
   done
 done
-# shellcheck disable=SC2046
-python3 -I "$HERE/summarize.py" "$RES" "$MOBILE_SIZE" "$FAST_SIZE" \
-  "$((REPS_LIVE + 1))" "$((REPS_MOBILE + 1))" "$((REPS_FAST + 1))" $(for r in $ROWS; do echo "$r" | cut -d: -f1,2; done)
+# shellcheck disable=SC2046,SC2086
+python3 -I "$HERE/summarize.py" "$RES" "$SPEC" $(for r in $ROWS; do echo "$r" | cut -d: -f1,2; done)
