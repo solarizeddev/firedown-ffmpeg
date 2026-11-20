@@ -86,8 +86,14 @@ struct JNIOkhttpFields {
  *  - rng: up to FIREDOWN_OKHTTP_SHADOW_RANGES wrappers, each over the whole
  *         [buf, buf + requested) range FFmpeg offered, reused for any later
  *         request inside it (Java would be given an offset); FIFO otherwise.
- * hit_bytes is the data that would have skipped the copy; wraps the
- * DirectByteBuffers either would have created. */
+ * In both, EVERY read would skip the copy (the read that creates a wrapper
+ * goes straight into FFmpeg's buffer too), so the cost of each is the
+ * DirectByteBuffers it would create: *_wraps. *_hit_bytes is the data read
+ * through a wrapper that already existed, i.e. how often a new one is NOT
+ * needed. The timers include their own clock reads (one thread-CPU clock
+ * syscall per read in read_cpu_ns), and only reads that return data are
+ * timed, so on a phone with many small reads (AES-128 HLS) read_cpu_ns runs a
+ * little high and wraps can exceed reads. */
 #define FIREDOWN_OKHTTP_SHADOW_RANGES 3
 #define FIREDOWN_OKHTTP_HIST_BUCKETS 20 /* floor(log2(bytes)), 1 B .. 512 KiB */
 struct OkhttpStats {

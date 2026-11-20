@@ -34,7 +34,7 @@ DESCR = {
     "m150": "150 Mbit/s file",
     "fast": "unthrottled file (loopback)",
     "chunked": "unthrottled, no Content-Length (512 KiB AVIO buffer)",
-    "crypto": "unthrottled, 4112-byte protocol reads (as crypto.c)",
+    "crypto": "unthrottled, protocol reads as crypto.c makes them (4 KiB, moving)",
 }
 
 
@@ -116,7 +116,7 @@ def main(argv):
         print("%s: %s" % (sc, DESCR.get(sc, sc)))
         hdr = ("%-18s | %7s %7s %7s %8s | %7s %5s | %6s %6s | %6s %6s"
                % ("native:app", "MiB/s", "cpu/MiB", "rd/MiB", "copy/MiB",
-                  "JNI/MiB", "wraps", "eq%", "eq_wr", "rng%", "rng_wr"))
+                  "JNI/MiB", "wraps", "eq_re%", "eq_wr", "rng_re%", "rng_wr"))
         print(hdr)
         print("-" * len(hdr))
         for c in rows:
@@ -124,7 +124,7 @@ def main(argv):
                 c,
                 fmt(med(c, sc, lambda r: (r[BYTES] / MIB) / (r[NS_TOTAL] / 1e9)), "%.0f"),
                 fmt(med(c, sc, lambda r: per_mib(r, r[CPU_NS])), "%.2f"),
-                fmt(med(c, sc, lambda r: stat(r, S_READ_CPU_NS, per_mib)), "%.2f"),
+                fmt(med(c, sc, lambda r: stat(r, S_READ_CPU_NS, lambda r, v: v / 1e6 / (r[S_BYTES] / MIB) if r[S_BYTES] else None)), "%.2f"),
                 fmt(med(c, sc, lambda r: stat(r, S_COPY_NS, lambda r, v: v / 1e3 / (r[S_BYTES] / MIB))), "%.0fus"),
                 fmt(med(c, sc, lambda r: r[CALLS] / (r[BYTES] / MIB)), "%.1f"),
                 fmt(med(c, sc, lambda r: r[WRAPS]), "%.0f"),
@@ -141,10 +141,12 @@ def main(argv):
     print("row). rd/MiB: CPU ms per MiB inside okhttp_read only (http.c's stats line).")
     print("copy/MiB: time in the staging memcpy per MiB. JNI/MiB: okhttp_read calls per")
     print("MiB. wraps: staging DirectByteBuffers created (1 per connection by design).")
-    print("eq% / eq_wr: share of bytes a hybrid keyed by exact address would have read")
-    print("without the copy, and the wrappers it would have created. rng% / rng_wr: the")
-    print("same for wrappers over whole buffer ranges plus an offset (3 kept). '-': this")
-    print("row's http.c has no stats line.")
+    print("eq_* / rng_*: two copy-free hybrids, from http.c's shadow counters (nothing is")
+    print("read differently): eq wraps FFmpeg's buffer at the exact address and re-wraps")
+    print("when FFmpeg reads elsewhere; rng wraps whole buffer ranges (3 kept) and passes")
+    print("an offset. Every read in either would skip the copy, so the cost is *_wr, the")
+    print("wrappers created per connection; *_re% is the share of bytes read through one")
+    print("that already existed. '-': this row's http.c has no stats line.")
     if failed:
         print("\nFAILED:")
         for f in failed:

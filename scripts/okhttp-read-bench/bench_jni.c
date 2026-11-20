@@ -12,8 +12,9 @@
  *   - "urlread:<url>": ffurl_open_whitelist() + ffurl_read() straight from
  *     the protocol, with crypto.c's exact buffer handling (libavformat/
  *     crypto.c, crypto_read): reads land in the free tail of a 4112-byte
- *     buffer until two 16-byte blocks are pending, whole blocks are consumed,
- *     and the remainder slides down once half the buffer is consumed. So the
+ *     buffer until two 16-byte blocks are pending, whole blocks but the last
+ *     are consumed (crypto.c holds one back for PKCS7 padding until EOF), and
+ *     the remainder slides down once half the buffer is consumed. So the
  *     protocol sees the same sizes AND the same moving addresses as for an
  *     AES-128 HLS segment, minus the decryption. `chunk` is unused there.
  * okhttp_read calls and DirectByteBuffer wraps are counted from http.c's own
@@ -153,7 +154,8 @@ JNIEXPORT jlongArray JNICALL Java_Bench_run(JNIEnv *env, jclass cls, jstring jur
                 }
                 indata += n;
             }
-            int consume = eof ? indata - used : (indata - used) / BLK * BLK;
+            /* All whole blocks but the last; at EOF, everything left. */
+            int consume = eof ? indata - used : ((indata - used) / BLK - 1) * BLK;
             if (consume > max_bytes - got)
                 consume = (int)(max_bytes - got);
             int64_t t = now_ns(CLOCK_MONOTONIC);

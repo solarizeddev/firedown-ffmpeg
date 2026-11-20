@@ -84,13 +84,13 @@ def main(paths):
     for p in paths:
         r = summarize(p)
         (rows if r else empty).append(r or p)
-    hdr = ("%-24s %5s %8s %4s | %7s %7s %8s %6s | %7s %10s | %5s %9s | %5s %9s"
+    hdr = ("%-24s %5s %8s %4s | %7s %7s %8s %6s | %7s %10s | %6s %9s | %7s %9s"
            % ("capture", "conns", "MiB", "prt", "rd_cpu", "rd_wall", "copy/MiB", "copy%",
-              "JNI/MiB", "med read B", "eq%", "eq_wr/max", "rng%", "rng_wr/max"))
+              "JNI/MiB", "med read B", "eq_re%", "eq_wr/max", "rng_re%", "rng_wr/max"))
     print(hdr)
     print("-" * len(hdr))
     for r in rows:
-        print("%-24s %5d %8.1f %4s | %7.2f %7.1f %6.0fus %5.1f%% | %7.1f %10s | %5.0f %5.0f/%-3d | %5.0f %5.0f/%-3d" % (
+        print("%-24s %5d %8.1f %4s | %7.2f %7.1f %6.0fus %5.1f%% | %7.1f %10s | %6.0f %5.0f/%-3d | %7.0f %5.0f/%-3d" % (
             r["file"][-24:], r["conns"], r["MiB"], r["partial"],
             r["rd_cpu"], r["rd_wall"], r["copy_us"], r["copy_share"],
             r["jni"], r["med_read"],
@@ -100,10 +100,13 @@ def main(paths):
     print("(1) or the okhttpRead fallback (0). rd_cpu / rd_wall: ms per MiB of CPU /")
     print("wall time inside okhttp_read on the calling thread (HTTP/2 also spends CPU on")
     print("OkHttp's reader thread, not counted here). copy/MiB and copy%: the staging")
-    print("memcpy per MiB, and as a share of rd_cpu. JNI/MiB: read calls per MiB. med")
-    print("read B: the median read's size range. eq / rng: share of bytes a copy-free")
-    print("hybrid would have served (exact-address wrapper / range wrapper + offset),")
-    print("with wrappers it would have created per connection, median/max.")
+    print("memcpy per MiB, and as a share of rd_cpu: CPU inside okhttp_read only, so it")
+    print("overstates the copy's share of the whole download thread (use simpleperf for")
+    print("that). JNI/MiB: read calls per MiB. med read B: the median read's size range.")
+    print("eq / rng: two copy-free hybrids (exact-address wrapper, re-wrapped when FFmpeg")
+    print("moves / range wrappers + offset). Every read in either would skip the copy, so")
+    print("the cost is the wrappers created per connection (*_wr, median/max); *_re% is")
+    print("the share of bytes read through a wrapper that already existed.")
     for p in empty:
         print("\nno okhttp-stats lines in %s: was debug.firedown.fflog set to 32 on a"
               " debug build before the download started?" % p)

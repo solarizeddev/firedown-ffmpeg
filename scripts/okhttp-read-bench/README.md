@@ -105,17 +105,25 @@ gaps. 64 KiB requests double the calls for no gain.
 The staging buffer adds one copy per read: Java fills it, C copies it into
 FFmpeg's buffer. Two copy-free alternatives were considered:
 
-- **eq**: wrap FFmpeg's buffer at the exact address it reads into, and reuse
-  that wrapper while it keeps reading there; otherwise fall back to staging.
-- **rng**: wrap the whole range FFmpeg offers once, and give Java an offset
-  for later reads inside it. That needs a third Java read method.
+- **eq**: wrap FFmpeg's buffer at the exact address it reads into, reuse the
+  wrapper while FFmpeg keeps reading there, and re-wrap when it moves.
+- **rng**: wrap the whole range FFmpeg offers (three kept), and give Java an
+  offset for later reads inside one. That needs a third Java read method.
 
-Rather than build either, `http.c` counts what each WOULD have done with the
-real read addresses (shadow counters; nothing is read differently), next to
-the time the copy actually takes. The decision rule, from the design review:
-keep staging unless the copy exceeds about 1 ms of CPU per MiB, or 3-5% of the
-download thread's CPU, on a real phone with a TLS workload. If it does, build
-**rng**, and only if its counters show at most three wrappers per connection.
+In both, every read would skip the copy, so what each costs is the
+`DirectByteBuffer`s it would create, and the per-read allocation those bring
+back is what the `[OOM FIX]` in `http.c` removed. Rather than build either,
+`http.c` counts what each WOULD have done with the real read addresses (shadow
+counters; nothing is read differently): wrappers created per connection
+(`*_wr`) and the share of bytes read through one that already existed
+(`*_re%`), next to the time the copy actually takes.
+
+The decision rule, from the design review: keep staging unless, on a real
+phone with a TLS workload, the copy exceeds about **1 ms of CPU per MiB**
+(`copy/MiB`), or about 3-5% of the download thread's whole CPU. `copy%` is its
+share of the CPU inside `okhttp_read` only, which overstates that; check the
+whole-thread share with simpleperf (below). If the rule trips, build **rng**,
+and only if its counters show at most three wrappers per connection.
 
 ## On a device
 
@@ -124,20 +132,31 @@ of the app, one line per closed connection (a whole file download, or one
 HLS/DASH segment, key or playlist).
 
 1. Build this repo's libraries and copy them into the app for a local test
-   (not a release): `./ffmpeg-android-maker.sh -dav1d -abis=arm64-v8a`, then the
-   app repo's `scripts/sync-ffmpeg.sh`. Install a **debug** build of the app:
-   only builds without `NDEBUG` honour the property below.
+   (not a release). The sync script must run from the app's `scripts/`
+   directory, because it writes to `../external/ffmpeg`:
+   ```
+   ./ffmpeg-android-maker.sh -dav1d -abis=arm64-v8a
+   cd <firedown>/scripts && ./sync-ffmpeg.sh <path to this repo>
+   ```
+   Then install a **debug** build of the app (`./gradlew installDebug`) from a
+   commit that has `utils_ffmpeg_log_level()` (the app's
+   `claude/okhttp-partial-read` branch, or `main` once merged): only debug
+   builds honour the property below, and older apps ignore it silently.
 2. Turn the stats on. FFmpeg's log level is read at the start of each
    operation, so this applies from the next download:
    ```
    adb shell setprop debug.firedown.fflog 32      # AV_LOG_INFO
    ```
-3. For each workload, clear the log, run it, and save the capture:
+3. For each workload, capture the log live while it runs. At INFO, FFmpeg
+   also logs every segment URL it opens, so dumping the ring buffer
+   afterwards can lose the first stats lines of a long HLS download; enlarge
+   it as well:
    ```
+   adb logcat -G 16M
    adb logcat -c
-   # ... run one workload in the app ...
-   adb logcat -d -s ffmpeg > wifi-file.txt
+   adb logcat -s ffmpeg > wifi-file.txt     # Ctrl-C once the workload is done
    ```
+   These captures contain full, signed media URLs: keep them private.
    Workloads, each at least three times, phone cool and on a fixed charging
    state:
    - a large HTTPS file over Wi-Fi (HTTP/2 from a CDN if possible);
@@ -151,10 +170,13 @@ HLS/DASH segment, key or playlist).
    ```
 5. Turn the stats off again: `adb shell setprop debug.firedown.fflog '""'`.
 
-No A/B build is needed: the copy's cost is measured directly (`copy/MiB`,
-`copy%`), and the shadow counters show what each hybrid would have achieved on
-the same reads. The read-path CPU counts only the thread that calls FFmpeg;
-with HTTP/2, OkHttp's reader thread does the socket and TLS work elsewhere.
+No A/B build is needed: the copy's cost is measured directly (`copy/MiB`),
+and the shadow counters show what each hybrid would have cost on the same
+reads. Caveats on the numbers: the read-path CPU (`rd_cpu`) counts only the
+thread that calls FFmpeg, and with HTTP/2 OkHttp's reader thread does the
+socket and TLS work elsewhere; the timers include their own clock reads (one
+thread-CPU clock syscall per read), which shows on AES-128 HLS, where reads
+are about 4 KiB.
 
 For a whole-download CPU picture, profile one download of a debug build with
 the NDK's simpleperf and look at `memcpy` under `okhttp_read` against BoringSSL,
