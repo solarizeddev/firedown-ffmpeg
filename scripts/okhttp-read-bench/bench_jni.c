@@ -35,8 +35,7 @@ static void log_cb(void *avcl, int level, const char *fmt, va_list vl)
         return;
     if (!strncmp(fmt, "okhttp_read: size=", 18))
         read_calls++;
-    else if (!strncmp(fmt, "okhttp_read: creating", 21) ||
-             !strncmp(fmt, "okhttp_open: staging", 20))
+    else if (!strncmp(fmt, "okhttp_read: creating", 21))
         dbb_wraps++;
     else if (level <= AV_LOG_ERROR)
         av_log_default_callback(avcl, level, fmt, vl);

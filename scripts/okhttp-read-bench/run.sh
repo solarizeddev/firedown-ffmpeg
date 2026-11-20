@@ -1,23 +1,25 @@
 #!/bin/sh
-# okhttp read-strategy benchmark: FFmpeg's REAL avio layer + the fork's REAL
-# http.c + the app's REAL FFmpegOkhttp + OkHttp, against a throttled local
-# server. Compares how a read request is sized and filled across the JNI
-# bridge, which FFmpeg 9.1 made matter: it grew the network AVIO buffer from
-# 32 KiB to 256 KiB (512 KiB on an unknown-length stream), and
-# FFmpegOkhttp.okhttpRead fills the WHOLE request before returning.
+# okhttp read benchmark: FFmpeg's REAL avio layer + the fork's REAL http.c +
+# the app's REAL FFmpegOkhttp + OkHttp, against a throttled local server.
+# It measures how a read request is sized and filled across the JNI bridge,
+# which FFmpeg 9.1 made matter: it grew the network AVIO buffer from 32 KiB
+# to 256 KiB (512 KiB on an unknown-length stream), and FFmpegOkhttp's
+# okhttpRead fills the WHOLE request before returning. See README.md here
+# for the design it chose and the numbers behind it.
 #
 #   sh scripts/okhttp-read-bench/run.sh
+#   BENCH_BASELINE_REF=<git ref> sh scripts/okhttp-read-bench/run.sh
 #
-# Native variants (built from firedown/replacements/libavformat/http.c by
-# variants.py), Java strategies (FFmpegOkhttp.okhttpRead's fill loop, chosen
-# per JVM):
-#   slots-32k   http.c as committed: 32 KiB clamp, address-keyed buffer table
-#   slots-none  the same without the clamp (what 9.1 does to an unclamped fork)
-#   stage-32k   one staging buffer per context, 32 KiB, memcpy to ffmpeg
-#   stage-256k  the same, 256 KiB
-#   fill        okhttpRead as shipped: fill `size` or end of body
-#   first       return after the first non-empty okio read (<= 8 KiB)
-#   deadline    fill, but return once some bytes are in and 10 ms passed
+# Rows (native http.c : app FFmpegOkhttp), built by variants.py:
+#   current:old       this http.c with an app that has no okhttpReadPartial
+#                     (falls back to okhttpRead, 32 KiB requests)
+#   current:new       this http.c with the app as committed (okhttpReadPartial,
+#                     256 KiB requests, 10 ms deadline): what ships
+#   current:new-64k   ... with 64 KiB requests
+#   current:new-2ms   ... with a 2 ms deadline
+#   current:new-50ms  ... with a 50 ms deadline
+#   baseline:old      http.c at BENCH_BASELINE_REF with an old app (only when
+#                     BENCH_BASELINE_REF is set)
 #
 # Scenarios (HTTP/1.1 over loopback; HTTP/2 is not exercised):
 #   live    128 kbit/s, no Content-Length (is_streamed): probe latency
@@ -105,31 +107,36 @@ fetch "$M/com/squareup/okio/okio-jvm/$OKIO_V/okio-jvm-$OKIO_V.jar" "$JARS/okio.j
 fetch "$M/org/jetbrains/kotlin/kotlin-stdlib/$KOTLIN_V/kotlin-stdlib-$KOTLIN_V.jar" "$JARS/kotlin-stdlib.jar"
 CP="$JARS/okhttp.jar:$JARS/okio.jar:$JARS/kotlin-stdlib.jar"
 
-# --- Java: the app's real classes + stubs + the strategy switch ----------------
-J="$OUT/java"
-mkdir -p "$J/com/solarized/firedown/ffmpegutils" "$J/com/solarized/firedown/okhttp"
-cp -R "$HERE/java/." "$J/"
-python3 -I "$HERE/variants.py" java "$JSRC_APP/ffmpegutils/FFmpegOkhttp.java" \
-  "$J/com/solarized/firedown/ffmpegutils/FFmpegOkhttp.java"
-cp "$JSRC_APP/ffmpegutils/FFmpegConstants.java" "$J/com/solarized/firedown/ffmpegutils/"
-cp "$JSRC_APP/okhttp/SafeHeaders.java" "$J/com/solarized/firedown/okhttp/"
-mkdir -p "$OUT/classes"
-find "$J" -name '*.java' >"$OUT/sources.txt"
-"$JAVA_HOME/bin/javac" -nowarn -d "$OUT/classes" -cp "$CP" @"$OUT/sources.txt"
+# --- Java: the app's real classes + stubs, old and new app ---------------------
+for mode in old new; do
+  J="$OUT/java-$mode"
+  mkdir -p "$J/com/solarized/firedown/ffmpegutils" "$J/com/solarized/firedown/okhttp" "$OUT/classes-$mode"
+  cp -R "$HERE/java/." "$J/"
+  python3 -I "$HERE/variants.py" java "$JSRC_APP/ffmpegutils/FFmpegOkhttp.java" \
+    "$J/com/solarized/firedown/ffmpegutils/FFmpegOkhttp.java" "$mode"
+  cp "$JSRC_APP/ffmpegutils/FFmpegConstants.java" "$J/com/solarized/firedown/ffmpegutils/"
+  cp "$JSRC_APP/okhttp/SafeHeaders.java" "$J/com/solarized/firedown/okhttp/"
+  find "$J" -name '*.java' >"$OUT/sources-$mode.txt"
+  "$JAVA_HOME/bin/javac" -nowarn -d "$OUT/classes-$mode" -cp "$CP" @"$OUT/sources-$mode.txt"
+done
 
 # --- native variants -------------------------------------------------------------
 CFLAGS_FF="-O2 -fPIC -std=c17 -DHAVE_AV_CONFIG_H -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64 -I$INC1 -I$FFDIR/build -I$FFDIR/src -I$FFDIR/src/libavformat -I$JAVA_HOME/include -I$JAVA_HOME/include/linux"
 LIBS_FF="$FFDIR/build/libavformat/libavformat.a $FFDIR/build/libavcodec/libavcodec.a $FFDIR/build/libavutil/libavutil.a -lm -lpthread"
-build_variant() { # name mode extra-cflags
-  python3 -I "$HERE/variants.py" c "$ROOT/firedown/replacements/libavformat/http.c" "$OUT/http-$1.c" "$2"
+build_lib() { # name http.c extra-cflags
   # shellcheck disable=SC2086
-  $CC $CFLAGS_FF $3 -w -shared -o "$OUT/lib$1.so" "$HERE/bench_jni.c" "$OUT/http-$1.c" \
+  $CC $CFLAGS_FF $3 -w -shared -o "$OUT/lib$1.so" "$HERE/bench_jni.c" "$2" \
     "$FFDIR/src/libavcodec/ffjni.c" "$FFDIR/src/libavcodec/jni.c" $LIBS_FF -Wl,-Bsymbolic
 }
-build_variant slots-32k  slots ""
-build_variant slots-none slots "-DFIREDOWN_OKHTTP_MAX_READ=0x7fffffff"
-build_variant stage-32k  stage "-DFIREDOWN_OKHTTP_MAX_READ=0x7fffffff -DFD_STAGE_SIZE=32768"
-build_variant stage-256k stage "-DFIREDOWN_OKHTTP_MAX_READ=0x7fffffff -DFD_STAGE_SIZE=262144"
+python3 -I "$HERE/variants.py" c "$ROOT/firedown/replacements/libavformat/http.c" "$OUT/http-current.c"
+build_lib current "$OUT/http-current.c" ""
+build_lib current-64k "$OUT/http-current.c" "-DFIREDOWN_OKHTTP_PARTIAL_MAX_READ=65536"
+ROWS="current:old:current:10 current:new:current:10 current:new-64k:current-64k:10 current:new-2ms:current:2 current:new-50ms:current:50"
+if [ -n "${BENCH_BASELINE_REF:-}" ]; then
+  git -C "$ROOT" show "$BENCH_BASELINE_REF:firedown/replacements/libavformat/http.c" >"$OUT/http-baseline.c"
+  build_lib baseline "$OUT/http-baseline.c" ""
+  ROWS="baseline:old:baseline:10 $ROWS"
+fi
 
 # --- server ---------------------------------------------------------------------
 python3 -I "$HERE/server.py" "$OUT/port" &
@@ -144,12 +151,16 @@ if [ "${BENCH_QUICK:-0}" = 1 ]; then
 else
   REPS_LIVE=3 REPS_MOBILE=3 REPS_FAST=6 MOBILE_SIZE=8388608 FAST_SIZE=268435456
 fi
-COMBOS="slots-32k:fill slots-none:fill slots-none:first slots-none:deadline slots-32k:first slots-32k:deadline stage-32k:fill stage-256k:first stage-256k:deadline"
 RES="$OUT/results.txt"
 : >"$RES"
-for combo in $COMBOS; do
-  lib=${combo%%:*} strat=${combo#*:}
-  echo "okread: $combo"
+for row in $ROWS; do
+  # row = <label native>:<label app>:<lib>:<deadline ms>
+  lab_n=${row%%:*}; rest=${row#*:}
+  lab_a=${rest%%:*}; rest=${rest#*:}
+  lib=${rest%%:*}; ms=${rest#*:}
+  mode=${lab_a%%-*}
+  label="$lab_n:$lab_a"
+  echo "okread: $label"
   for sc in live mobile fast; do
     case $sc in
       live)   url="$BASE/live?rate=16000"; chunk=4096; max=65536; lim=120000; reps=$REPS_LIVE ;;
@@ -157,8 +168,8 @@ for combo in $COMBOS; do
       fast)   url="$BASE/file?size=$FAST_SIZE&rate=0"; chunk=16384; max=$FAST_SIZE; lim=600000; reps=$REPS_FAST ;;
     esac
     # one extra rep, dropped in the summary: JIT warm-up
-    "$JAVA_HOME/bin/java" -Xmx512m -Dfd.read="$strat" -Dfd.deadlineMs=10 \
-      -cp "$OUT/classes:$CP" Bench "$OUT/lib$lib.so" "$combo $sc" "$url" "$chunk" "$max" "$lim" $((reps + 1)) \
+    "$JAVA_HOME/bin/java" -Xmx512m -Dfd.deadlineMs="$ms" \
+      -cp "$OUT/classes-$mode:$CP" Bench "$OUT/lib$lib.so" "$label $sc" "$url" "$chunk" "$max" "$lim" $((reps + 1)) \
       2>"$OUT/err.txt" >>"$RES" || { cat "$OUT/err.txt" >&2; exit 1; }
   done
 done
