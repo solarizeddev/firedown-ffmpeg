@@ -26,8 +26,9 @@
 #   mobile   16 Mbit/s file; m50, m100, m150: 50 / 100 / 150 Mbit/s files
 #   fast     unthrottled file (256 KiB AVIO buffer)
 #   chunked  unthrottled, no Content-Length (512 KiB AVIO buffer)
-#   crypto   unthrottled, ffurl_read(4112) straight from the protocol, as
-#            crypto.c reads an AES-128 HLS segment
+#   crypto   unthrottled, ffurl_read() straight from the protocol with
+#            crypto.c's buffer handling (4 KiB reads at a moving offset), as
+#            for an AES-128 HLS segment
 # Each throughput table also shows http.c's okhttp-stats counters: time in the
 # staging copy, and what two copy-free "hybrids" would have done with the same
 # reads (shadow counters only; nothing is read differently). A device prints
@@ -155,8 +156,8 @@ BASE="http://127.0.0.1:$(cat "$OUT/port")"
 # --- matrix ---------------------------------------------------------------------
 # Scenarios: name | server path (without size) | read chunk | bytes | reps.
 # Reads are avio_read(chunk) through the AVIO buffer, except "crypto", which
-# reads ffurl_read(4112) straight from the protocol the way crypto.c reads an
-# AES-128 HLS segment. Rates are in bytes/s.
+# reads straight from the protocol with crypto.c's buffer handling (see
+# bench_jni.c; its chunk column is unused). Rates are in bytes/s.
 MIB=1048576
 if [ "${BENCH_QUICK:-0}" = 1 ]; then Q=1; else Q=0; fi
 scenario() { # name -> path chunk bytes reps
