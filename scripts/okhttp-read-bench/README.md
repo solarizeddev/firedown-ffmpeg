@@ -125,6 +125,34 @@ share of the CPU inside `okhttp_read` only, which overstates that; check the
 whole-thread share with simpleperf (below). If the rule trips, build **rng**,
 and only if its counters show at most three wrappers per connection.
 
+### Desktop result
+
+Full run, plain HTTP over loopback, the shipped configuration (`current:new`).
+"Share" is the copy's time against the reader thread's whole CPU. Without TLS
+that denominator is far smaller than on a phone, so the share runs high here.
+Wrappers are per connection; each scenario is one 8-256 MiB connection.
+
+| Scenario | Copy per MiB | Share | JNI calls per MiB | eq wrappers | rng wrappers |
+|---|---|---|---|---|---|
+| 16 Mbit/s file | 149 µs | 3.2% | 13.2 | 106 | 1 |
+| 50 Mbit/s file | 137 µs | 4.3% | 8.4 | 135 | 1 |
+| 100 Mbit/s file | 83 µs | 3.2% | 4.2 | 1 | 1 |
+| 150 Mbit/s file | 66 µs | 2.4% | 6.3 | 145 | 1 |
+| Unthrottled file | 33 µs | 1.4% | 4.0 | 1 | 1 |
+| Unthrottled, no length | 40 µs | 1.7% | 4.0 | 1,024 | 1 |
+| crypto.c reads | 22 µs | 0.7% | 256 | 2 | 1 |
+
+- The copy costs 0.02-0.15 ms per MiB, a tenth of the 1 ms threshold or less.
+- **eq** would bring back a wrapper per read whenever reads are short (16, 50
+  and 150 Mbit/s) and on every unknown-length stream, where FFmpeg alternates
+  between two addresses. It only works when 256 KiB arrives within the
+  deadline. It is ruled out.
+- **rng** needs one wrapper per connection everywhere. It is the variant to
+  build if a phone ever shows the copy to matter.
+- AES-128 HLS reads cost 256 JNI calls per MiB whatever the buffer design,
+  because `crypto.c` reads 4 KiB at a time. If anything on the read path is
+  worth optimising, it is that, not the copy.
+
 ## On a device
 
 The same stats line the benchmark parses is printed to logcat by a debug build
