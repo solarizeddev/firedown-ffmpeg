@@ -84,13 +84,13 @@ def main(paths):
     for p in paths:
         r = summarize(p)
         (rows if r else empty).append(r or p)
-    hdr = ("%-24s %5s %8s %4s | %7s %7s %8s %6s | %7s %10s | %6s %9s | %7s %9s"
+    hdr = ("%-24s %5s %8s %4s | %7s %7s %8s %6s | %7s %13s | %6s %9s | %7s %9s"
            % ("capture", "conns", "MiB", "prt", "rd_cpu", "rd_wall", "copy/MiB", "copy%",
               "JNI/MiB", "med read B", "eq_re%", "eq_wr/max", "rng_re%", "rng_wr/max"))
     print(hdr)
     print("-" * len(hdr))
     for r in rows:
-        print("%-24s %5d %8.1f %4s | %7.2f %7.1f %6.0fus %5.1f%% | %7.1f %10s | %6.0f %5.0f/%-3d | %7.0f %5.0f/%-3d" % (
+        print("%-24s %5d %8.1f %4s | %7.2f %7.1f %6.0fus %5.1f%% | %7.1f %13s | %6.0f %5.0f/%-3d | %7.0f %5.0f/%-3d" % (
             r["file"][-24:], r["conns"], r["MiB"], r["partial"],
             r["rd_cpu"], r["rd_wall"], r["copy_us"], r["copy_share"],
             r["jni"], r["med_read"],

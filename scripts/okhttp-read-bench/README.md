@@ -159,6 +159,27 @@ The same stats line the benchmark parses is printed to logcat by a debug build
 of the app, one line per closed connection (a whole file download, or one
 HLS/DASH segment, key or playlist).
 
+**The short way:** one script does all of the steps below except tapping the
+downloads, which it prompts for, and then restores the device and the app's
+libraries:
+
+```
+scripts/okhttp-read-bench/device-run.sh ~/path/to/firedown
+```
+
+It switches both repos to the measurement branches (refusing if either has
+uncommitted changes), builds arm64 libraries, copies them into the app,
+installs the debug build, turns the stats on, and captures each workload
+(wifi-file, hls, aes-hls, radio; three runs each). A capture stops when you
+press Enter, or 45 s after the last connection closed. Then it prints the
+summary and saves it with the captures in `~/okread-<date>-<time>`. Run it
+with `--help` for options (`--reps`, `--workloads`, `--no-build`,
+`--no-install`, `--keep-libs`). The build needs `ANDROID_SDK_HOME` and
+`ANDROID_NDK_HOME`; the script uses yours if exported, else `~/Android/Sdk`
+and its newest NDK.
+
+The manual steps, for reference or for running a part by hand:
+
 1. Build this repo's libraries and copy them into the app for a local test
    (not a release). The sync script must run from the app's `scripts/`
    directory, because it writes to `../external/ffmpeg`:
